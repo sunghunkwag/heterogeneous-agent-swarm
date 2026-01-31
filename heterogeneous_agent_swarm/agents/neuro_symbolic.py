@@ -28,9 +28,10 @@ class NeuroSymbolicVerifierAgent:
             )
         
         self.artifacts = {"verdict": "allow"}
-        import random
+        # Deterministic fallback
+        val = abs(hash(str(state.raw_obs))) % 10
         return Proposal(
-            action_type="APPEND", action_value=random.randint(0, 9),
+            action_type="APPEND", action_value=val,
             confidence=0.1, predicted_value=0.0, estimated_cost=1.0,
             rationale="compliant",
             source_agent=self.name
