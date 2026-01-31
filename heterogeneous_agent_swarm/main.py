@@ -124,6 +124,9 @@ class AdvancedAISystem:
         if "emergency_stop" in interrupts:
             return "emergency_stop", {}
 
+        # Inject error_rate for LiquidControllerAgent
+        self.work.set("error_rate", snn_inputs["error_rate"])
+
         # B. GNN Update (Consciousness)
         gnn_inputs = {}
         for name in self.agents:
@@ -163,6 +166,8 @@ class AdvancedAISystem:
         
         self.work.set("last_tool", tool_info)
         self.work.set("obs", obs)
+        self.work.set("last_action_name", tool_name)
+        self.work.set("last_action_params", tool_args)
         self.last_action = (tool_name, tool_args)
         
         return tool_name, tool_info
@@ -204,7 +209,7 @@ def generate_brain_view(gnn_vector):
         for j in range(4):
             if i+j < len(vec):
                 val = vec[i+j]
-                color = "green" if val > 0.5 else "blue" if val > 0 else "dim white"
+                color = "green" if val > 0.5 else "blue" if val > 0 else "white"
                 row_cells.append(Panel(f"{val:.2f}", style=f"on {color}"))
             else:
                 row_cells.append("")

@@ -18,16 +18,20 @@ class TransformerLLMAgent:
         
     def propose(self, state: EncodedState, bus_memory: Dict[str, Any]) -> Proposal:
         obs = state.raw_obs
+        system_thought = np.array(bus_memory.get("system_thought", [0.0]*16))
+        thought_power = np.mean(np.abs(system_thought))
         
         # 0. Execute Pending Plan
         if self.plan_queue:
             action = self.plan_queue.pop(0)
             return Proposal(
-                agent_name=self.name,
-                confidence=0.95,
-                action="write_patch",
+                action_type="write_patch",
                 action_value=action,
-                reasoning=f"Executing DSL Plan ({len(self.plan_queue)} remaining)"
+                confidence=0.95 + (0.05 * thought_power),
+                predicted_value=1.0,
+                estimated_cost=1.0,
+                rationale=f"Executing DSL Plan ({len(self.plan_queue)} remaining). Thought: {thought_power:.2f}",
+                source_agent=self.name
             )
             
         # 1. ARC GRID MODE
@@ -48,31 +52,26 @@ class TransformerLLMAgent:
                     # Return first action immediately
                     action = self.plan_queue.pop(0)
                     return Proposal(
-                        agent_name=self.name,
-                        confidence=1.0,
-                        action="write_patch",
+                        action_type="write_patch",
                         action_value=action,
-                        reasoning="ARC: DSL Solution Found!"
+                        confidence=1.0,
+                        predicted_value=1.0,
+                        estimated_cost=1.0,
+                        rationale="ARC: DSL Solution Found!",
+                        source_agent=self.name
                     )
                 else:
                     self.last_solved_task = task_file # Mark as tried
-                    # Fallback to random if failed
             
-            # Fallback logic (Random exploration)
-            inp = np.array(obs["input_grid"])
-            cur = np.array(obs["current_grid"])
-            h, w = inp.shape
-            import random
-            x = random.randint(0, w-1)
-            y = random.randint(0, h-1)
-            color = random.randint(0, 9)
-
+            # Failure signal (No random fallback)
             return Proposal(
-                agent_name=self.name,
-                confidence=0.1,
-                action="write_patch",
-                action_value={"x": int(x), "y": int(y), "color": int(color)},
-                reasoning="ARC: Random Search (Solver Failed)"
+                action_type="write_patch",
+                action_value={"x": 0, "y": 0, "color": 0}, # Dummy value
+                confidence=0.0,
+                predicted_value=0.0,
+                estimated_cost=0.0,
+                rationale=f"ARC: Solver Failed. Waiting. Thought: {thought_power:.2f}",
+                source_agent=self.name
             )
 
         # 2. SEQUENCE MODE
@@ -116,8 +115,11 @@ class TransformerLLMAgent:
 
         if next_val is not None:
              return Proposal(
-                action_type="APPEND", action_value=next_val,
-                confidence=0.9, predicted_value=2.0, estimated_cost=1.0,
+                action_type="APPEND",
+                action_value=next_val,
+                confidence=0.9,
+                predicted_value=2.0,
+                estimated_cost=1.0,
                 rationale=f"detected_pattern_next={next_val}",
                 source_agent=self.name
             )
@@ -125,16 +127,22 @@ class TransformerLLMAgent:
         # If length match target (5), submit?
         if len(buffer) == 5:
              return Proposal(
-                action_type="TEST", action_value=None,
-                confidence=0.6, predicted_value=10.0, estimated_cost=2.0,
+                action_type="TEST",
+                action_value=None,
+                confidence=0.6,
+                predicted_value=10.0,
+                estimated_cost=2.0,
                 rationale="sequence_length_met_verify",
                 source_agent=self.name
             )
 
-        import random
+        # Failure signal
         return Proposal(
-            action_type="APPEND", action_value=random.randint(0, 9),
-            confidence=0.2, predicted_value=0.0, estimated_cost=1.0,
-            rationale="random_guess",
+            action_type="APPEND",
+            action_value=0,
+            confidence=0.0,
+            predicted_value=0.0,
+            estimated_cost=1.0,
+            rationale="No pattern detected",
             source_agent=self.name
         )
