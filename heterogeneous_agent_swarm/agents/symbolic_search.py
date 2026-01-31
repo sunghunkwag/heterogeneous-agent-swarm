@@ -115,7 +115,7 @@ class SymbolicSearchAgent:
 
         if next_val is not None:
              return Proposal(
-                action_type="APPEND",
+                action_type="write_patch",
                 action_value=next_val,
                 confidence=0.9,
                 predicted_value=2.0,
@@ -127,7 +127,7 @@ class SymbolicSearchAgent:
         # If length match target (5), submit?
         if len(buffer) == 5:
              return Proposal(
-                action_type="TEST",
+                action_type="run_tests",
                 action_value=None,
                 confidence=0.6,
                 predicted_value=10.0,

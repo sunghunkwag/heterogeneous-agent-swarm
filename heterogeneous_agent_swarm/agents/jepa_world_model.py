@@ -71,7 +71,7 @@ class JEPAWorldModelAgent:
         # If we haven't tested in a while (uncertainty high), suggest TEST (Heuristic kept as "Intuition")
         if not last_test and len(obs.get("buffer", [])) >= 3:
              return Proposal(
-                action_type="TEST", action_value=None,
+                action_type="run_tests", action_value=None,
                 confidence=0.85, predicted_value=1.5, estimated_cost=5.0,
                 rationale="reduce_uncertainty",
                 source_agent=self.name
