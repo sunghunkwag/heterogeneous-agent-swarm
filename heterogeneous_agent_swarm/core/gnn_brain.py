@@ -8,6 +8,13 @@ class LightweightGNN:
     Uses Message Passing to aggregate state from all agents into a unified 'System Thought'.
     """
     def __init__(self, agent_names: List[str], hidden_dim: int = 16):
+        """
+        Initialize the GNN.
+
+        Args:
+            agent_names: List of agent names in the network.
+            hidden_dim: Dimension of the hidden state vectors.
+        """
         self.output_dim = hidden_dim
         self.node_indices = {name: i for i, name in enumerate(agent_names)}
         self.num_nodes = len(agent_names)
@@ -20,10 +27,18 @@ class LightweightGNN:
         
         # Node states (hidden states)
         self.H = np.zeros((self.num_nodes, hidden_dim))
+        # Initialize H_prev for safety (though updated in update())
+        self.H_prev = np.zeros_like(self.H)
 
-    def update(self, observations: Dict[str, np.ndarray]):
+    def update(self, observations: Dict[str, np.ndarray]) -> np.ndarray:
         """
-        observations: {agent_name: feature_vector}
+        Run one step of message passing and state update.
+
+        Args:
+            observations: Dictionary mapping agent names to their feature vectors.
+
+        Returns:
+            The global context vector ("System Thought").
         """
         # Save previous state for Hebbian learning
         self.H_prev = self.H.copy()
@@ -51,13 +66,17 @@ class LightweightGNN:
 
         return Global_Context # The "System Thought"
 
-    def train(self, reward: float):
+    def train(self, reward: float) -> float:
         """
         Online Learning: Hebbian + Reward Modulation.
         If reward > 0, reinforce connections between active nodes.
         If reward < 0, weaken them (Anti-Hebbian).
         
-        Delta_W_msg = learning_rate * reward * (H_post.T * H_pre)
+        Args:
+            reward: The scalar reward signal from the environment.
+
+        Returns:
+            Mean absolute weight magnitude (for logging).
         """
         # Simple Hebbian on Message Weights
         # We want to reinforce the pattern H that led to success
@@ -81,7 +100,13 @@ class LightweightGNN:
         # Clip to prevent explosion
         self.W_msg = np.clip(self.W_msg, -1.0, 1.0)
         
-        return np.mean(np.abs(self.W_msg)) # Return mean weight magnitude
+        return float(np.mean(np.abs(self.W_msg)))
 
-    def get_system_state(self):
+    def get_system_state(self) -> np.ndarray:
+        """
+        Get the current global system state.
+
+        Returns:
+            The mean vector of all node states.
+        """
         return np.mean(self.H, axis=0)

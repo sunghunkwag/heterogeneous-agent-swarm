@@ -7,7 +7,18 @@ import time
 @dataclass
 class Blackboard:
     """
-    Structured shared state. Not a chat log.
+    Structured shared state accessible to all agents.
+    Acts as a central communication board, distinct from a simple chat log.
+
+    Args:
+        episode_id: Unique identifier for the current episode.
+        goal_text: High-level goal description.
+        task_text: Current task description.
+        obs: Current environment observations.
+        plan: List of planned tool steps.
+        step_history: History of executed tool steps.
+        signals: System signals (scores, warnings, flags).
+        ts: Timestamp of creation/update.
     """
     episode_id: str
     goal_text: str
@@ -19,7 +30,20 @@ class Blackboard:
     ts: float = field(default_factory=lambda: time.time())
 
     def record_step(self, step: Dict[str, Any]) -> None:
+        """
+        Append a step execution result to history.
+
+        Args:
+            step: Dictionary containing step details.
+        """
         self.step_history.append(step)
 
     def set_signal(self, k: str, v: Any) -> None:
+        """
+        Set a system signal value.
+
+        Args:
+            k: Signal key.
+            v: Signal value.
+        """
         self.signals[k] = v

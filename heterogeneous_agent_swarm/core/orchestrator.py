@@ -1,51 +1,129 @@
 from __future__ import annotations
-from typing import Dict, Any, Tuple, List
-import math
-
-# We need types that match what RunnerV2 expects (Proposal)
-# Proposal is not defined in core yet, RunnerV2 imports it from ..core.types
-# I will assume core.types structure
+from typing import Dict, Any, Tuple, List, Optional
+import random
+from collections import Counter
+from .graph import AgentGraph
+from .types import Proposal
 
 class Orchestrator:
-    def __init__(self, graph):
+    """
+    Central decision-making component that selects the best action from agent proposals.
+    """
+    def __init__(self, graph: AgentGraph):
+        """
+        Initialize the Orchestrator.
+
+        Args:
+            graph: The AgentGraph instance tracking agent states.
+        """
         self.graph = graph
+        self.veto_threshold = 0.5
+        self.selection_strategy = "weighted_perf"
 
-    def choose(self, proposals: Dict[str, Any], state: Any, veto: Dict[str, Any] = None) -> Tuple[str, Dict[str, Any]]:
+    def update_policy(self, veto_threshold: Optional[float] = None, selection_strategy: Optional[str] = None) -> None:
         """
-        Selects the winning action from proposals.
-        proposals: {agent_name: Proposal}
+        Update the orchestration policy parameters.
+
+        Args:
+            veto_threshold: New threshold for vetoing actions (0.0 to 1.0).
+            selection_strategy: New selection strategy ("weighted_perf", "consensus", "random").
         """
-        # If veto is present
-        if veto and veto.get("deny", False):
-            # If veto denies, we might force a "TEST" or "WAIT" action?
-            # Or just filter out the dangerous proposal?
-            # For this simplified version: If veto denies a specific 'action_type' or action, we filter.
-            pass
+        if veto_threshold is not None:
+            self.veto_threshold = max(0.0, min(1.0, veto_threshold))
 
-        alive = [n for n in proposals.keys() if n in self.graph.alive_nodes()]
-        if not alive:
-            return "summarize", {"reason": "no_alive_agents"} # Fallback tool
+        if selection_strategy is not None:
+            if selection_strategy in ["weighted_perf", "consensus", "random"]:
+                self.selection_strategy = selection_strategy
 
-        # Simple weighted choice based on confidence (Deterministic)
-        scores = []
-        for n in alive:
-            p = proposals[n]
-            # Score = Confidence only. No random noise.
-            score = p.confidence * 1.0
-            scores.append((score, n, p))
+    def choose(self, proposals: Dict[str, Proposal], state: Any, veto: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+        """
+        Select the winning action based on the current policy.
 
-        # Sort by score (desc) then by name (asc) for determinism
-        # Using tuple (-score, name) for ascending sort
-        scores.sort(key=lambda x: (-x[0], x[1]))
-        winner = scores[0]
+        Args:
+            proposals: Dictionary mapping agent names to their Proposals.
+            state: Current system state (unused in selection logic currently).
+            veto: Optional veto signal from verification agents.
+
+        Returns:
+            Tuple containing:
+            - tool_name (str)
+            - tool_args (dict)
+            - debug_info (dict)
+        """
+        # 1. Veto Check
+        if veto:
+            veto_score = veto.get("veto_score")
+            # If veto_score is present, check against threshold
+            if veto_score is not None:
+                if veto_score > self.veto_threshold:
+                    return "wait", {}, {"reason": "vetoed", "veto_score": veto_score, "threshold": self.veto_threshold}
+            # Fallback to binary check if score missing
+            elif veto.get("deny", False):
+                 return "wait", {}, {"reason": "vetoed_binary"}
+
+        # Filter for alive agents
+        alive_proposals = {n: p for n, p in proposals.items()
+                           if self.graph.node_alive.get(n, False)}
+
+        if not alive_proposals:
+            return "summarize", {"reason": "no_alive_agents"}, {"reason": "no_alive_agents"}
+
+        winner_proposal: Optional[Proposal] = None
+        selection_reason = ""
         
-        # Action is explicitly the 'action_type' string for tools in v0.2?
-        # RunnerV2 says: tool_name = action
-        # In v0.1 Proposal had action_type="APPEND", action_value=...
-        # In v0.2, agents should propose tool names.
-        # I need to adapt the agents to propose "tool_name"
-        
-        chosen_tool = winner[2].action_type # This should be the tool name
-        tool_args = {"value": winner[2].action_value}
+        # 2. Strategy Execution
+        if self.selection_strategy == "random":
+            # Uniform random selection
+            if alive_proposals:
+                choice_name, winner_proposal = random.choice(list(alive_proposals.items()))
+                selection_reason = "random_exploration"
 
-        return chosen_tool, tool_args, {"winner": winner[1], "score": winner[0], "rationale": winner[2].rationale}
+        elif self.selection_strategy == "consensus":
+            # Majority vote on tool_name
+            tool_counts = Counter(p.action_type for p in alive_proposals.values())
+            total_votes = len(alive_proposals)
+            if total_votes > 0:
+                # Find tool with max votes
+                best_tool, count = tool_counts.most_common(1)[0]
+
+                if count / total_votes > 0.5:
+                    # Pick the proposal corresponding to this tool with highest confidence
+                    candidates = [p for p in alive_proposals.values() if p.action_type == best_tool]
+                    winner_proposal = max(candidates, key=lambda p: p.confidence)
+                    selection_reason = f"consensus_agreement_{count}/{total_votes}"
+                else:
+                    return "wait", {}, {"reason": "no_consensus", "stats": dict(tool_counts)}
+
+        else: # "weighted_perf" (Default)
+            # Score = Confidence * Node Performance (if available)
+            scored_proposals = []
+            for name, p in alive_proposals.items():
+                perf = self.graph.node_perf.get(name, 0.5)
+                score = p.confidence * perf
+                scored_proposals.append((score, name, p))
+
+            # Sort desc by score
+            if scored_proposals:
+                scored_proposals.sort(key=lambda x: (-x[0], x[1]))
+                score, name, winner_proposal = scored_proposals[0]
+                selection_reason = f"weighted_perf_score_{score:.2f}"
+
+        # Safety check if no winner selected (should match fallback if logic is correct)
+        if not winner_proposal:
+             # Should be covered by "if not alive_proposals" but for safety
+             return "summarize", {"reason": "no_selection"}, {"reason": "no_winner_selected"}
+
+        # 3. Construct Result
+        tool_name = winner_proposal.action_type
+        # Preserve existing behavior for tool args
+        tool_args = {"value": winner_proposal.action_value}
+        
+        debug_info = {
+            "winner": winner_proposal.source_agent,
+            "reason": selection_reason,
+            "rationale": winner_proposal.rationale,
+            "all_proposals": {n: p.action_type for n, p in alive_proposals.items()},
+            "votes": {n: getattr(p, "action_type", "unknown") for n, p in alive_proposals.items()}
+        }
+
+        return tool_name, tool_args, debug_info

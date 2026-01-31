@@ -4,6 +4,7 @@ import sys
 import os
 import numpy as np
 from datetime import datetime
+from collections import Counter
 
 # Ensure we can import heterogeneous_agent_swarm
 sys.path.append(os.getcwd())
@@ -70,7 +71,7 @@ class AdvancedAISystem:
         
         # 4. Runtime & Memory
         self.orch = Orchestrator(self.graph)
-        self.meta = MetaKernelV2(self.graph, self.audit)
+        self.meta = MetaKernelV2(self.graph, self.audit, self.orch)
         self.encoder = SimpleEncoder()
         self.eval = Evaluator()
         self.work = WorkingMemory()
@@ -81,6 +82,12 @@ class AdvancedAISystem:
         self.last_action = ("None", {})
         self.episode_log = []
         self.consecutive_idle_count = 0
+
+        # Dynamic State Tracking
+        self.last_success_time = None
+        self.start_time = time.time()
+        self.budget_history = []
+        self.action_history = []
 
     def _register_tools(self):
         def tool_run_tests(_args):
@@ -114,14 +121,40 @@ class AdvancedAISystem:
         add(SSMStabilityAgent("ssm_agent", SSMConfig()))
         add(SNNReflexAgent("snn_agent", SNNConfig()))
 
+    def _calculate_budget_slope(self):
+        if len(self.budget_history) < 2:
+            return 0.0
+        y = self.budget_history[-5:]
+        x = np.arange(len(y))
+        slope, _ = np.polyfit(x, y, 1)
+        return slope
+
+    def _calculate_entropy(self):
+        if not self.action_history:
+            return 0.0
+        actions = self.action_history[-10:]
+        counts = Counter(actions)
+        total = len(actions)
+        entropy = 0.0
+        for count in counts.values():
+            p = count / total
+            entropy -= p * np.log2(p)
+        return entropy
+
     def step(self, bb: Blackboard):
         """Execute one cognitive cycle."""
         # A. SNN Check (Nervous System)
+        current_time = time.time()
+        if self.last_success_time:
+            t_since = current_time - self.last_success_time
+        else:
+            t_since = current_time - self.start_time
+
         snn_inputs = {
-            "time_since_success": 0.1, 
+            "time_since_success": t_since,
             "error_rate": -1.0 * self.eval.evaluate(bb.__dict__).score,
-            "budget_slope": -0.1,
-            "entropy": abs(np.sin(len(self.episode_log))) # Deterministic entropy proxy
+            "budget_slope": self._calculate_budget_slope(),
+            "entropy": self._calculate_entropy()
         }
         interrupts = self.snn.process_signals(snn_inputs)
         self.last_spikes = interrupts
@@ -154,7 +187,7 @@ class AdvancedAISystem:
         p_neuro = proposals.get("neurosym_agent")
         veto = None
         if p_neuro and p_neuro.artifacts.get("verdict") == "deny":
-            veto = {"deny": True}
+            veto = p_neuro.artifacts # Pass full artifacts for veto_score check
         
         tool_name, tool_args, dbg = self.orch.choose(proposals, state, veto)
         
@@ -162,6 +195,13 @@ class AdvancedAISystem:
 
         # E. Execution
         obs, tool_info = self.env.step_tool(tool_name, tool_args)
+
+        # Update History
+        self.budget_history.append(tool_info.get("cost", 0.0))
+        self.action_history.append(tool_name)
+        if obs.get("last_test_ok"):
+            self.last_success_time = time.time()
+
         bb.obs = obs
         bb.record_step(tool_info)
         
