@@ -12,7 +12,8 @@ class TestMetaKernelV2(unittest.TestCase):
         self.graph = AgentGraph()
         self.audit = MagicMock(spec=AuditLog)
         self.orch = MagicMock(spec=Orchestrator)
-        self.meta = MetaKernelV2(self.graph, self.audit, self.orch, min_quorum=3)
+        self.agents = {}
+        self.meta = MetaKernelV2(self.graph, self.audit, self.orch, self.agents, min_quorum=3)
 
         # Setup initial graph state
         # 5 agents to allow dropping 1 (remaining 4)
@@ -93,6 +94,7 @@ class TestMetaKernelV2(unittest.TestCase):
 
         self.assertTrue(self.meta.commit(cp_add.proposal_id))
         self.assertTrue(self.graph.node_alive["F"])
+        self.assertIn("F", self.agents)
 
         # Policy Update
         cp_pol = self.meta.propose("policy_update", {"veto_threshold": 0.9}, "r")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Any, Tuple, List, Optional
-import random
+import hashlib
 from collections import Counter
 from .graph import AgentGraph
 from .types import Proposal
@@ -73,10 +73,20 @@ class Orchestrator:
         
         # 2. Strategy Execution
         if self.selection_strategy == "random":
-            # Uniform random selection
+            # Deterministic random: hash-based selection
+            # Use state hash to pick deterministically but pseudo-randomly
             if alive_proposals:
-                choice_name, winner_proposal = random.choice(list(alive_proposals.items()))
-                selection_reason = "random_exploration"
+                # Sort by name for consistent ordering
+                items = sorted(alive_proposals.items(), key=lambda x: x[0])
+
+                # Create deterministic hash from state
+                state_str = str(state)
+                hash_input = f"{state_str}_{len(items)}".encode()
+                hash_val = int(hashlib.md5(hash_input).hexdigest(), 16)
+
+                choice_idx = hash_val % len(items)
+                choice_name, winner_proposal = items[choice_idx]
+                selection_reason = "deterministic_random_hash"
 
         elif self.selection_strategy == "consensus":
             # Majority vote on tool_name

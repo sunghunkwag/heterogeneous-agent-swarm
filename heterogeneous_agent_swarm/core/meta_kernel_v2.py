@@ -9,6 +9,14 @@ from .audit import AuditLog
 from .graph import AgentGraph
 from .orchestrator import Orchestrator
 
+from heterogeneous_agent_swarm.agents.symbolic_search import SymbolicSearchAgent, SymbolicConfig
+from heterogeneous_agent_swarm.agents.jepa_world_model import JEPAWorldModelAgent, JEPAConfig
+from heterogeneous_agent_swarm.agents.neuro_symbolic import NeuroSymbolicVerifierAgent, Policy
+from heterogeneous_agent_swarm.agents.liquid_controller import LiquidControllerAgent, LiquidConfig
+from heterogeneous_agent_swarm.agents.diffusion_explorer import DiffusionExplorerAgent, DiffusionConfig
+from heterogeneous_agent_swarm.agents.ssm_stability import SSMStabilityAgent, SSMConfig
+from heterogeneous_agent_swarm.agents.snn_reflex import SNNReflexAgent, SNNConfig
+
 
 @dataclass
 class ChangeProposal:
@@ -24,7 +32,8 @@ class MetaKernelV2:
     """
     Manages structural adaptation of the swarm (adding/removing agents, policy updates).
     """
-    def __init__(self, graph: AgentGraph, audit: AuditLog, orchestrator: Orchestrator, min_quorum: int = 3):
+    def __init__(self, graph: AgentGraph, audit: AuditLog, orchestrator: Orchestrator,
+                 agents_dict: Dict[str, Any], device: str = "cpu", min_quorum: int = 3):
         """
         Initialize the MetaKernel.
 
@@ -32,13 +41,27 @@ class MetaKernelV2:
             graph: The AgentGraph.
             audit: AuditLog for recording events.
             orchestrator: The system Orchestrator (for policy updates).
+            agents_dict: Reference to the main agents dictionary.
+            device: Computing device (cpu/cuda).
             min_quorum: Minimum votes required to pass a proposal.
         """
         self.graph = graph
         self.audit = audit
         self.orchestrator = orchestrator
+        self.agents_dict = agents_dict
+        self.device = device
         self.min_quorum = min_quorum
         self.proposals: Dict[str, ChangeProposal] = {}
+
+        self.agent_factory = {
+            "symbolic": (SymbolicSearchAgent, SymbolicConfig),
+            "jepa": (JEPAWorldModelAgent, JEPAConfig),
+            "neurosym": (NeuroSymbolicVerifierAgent, Policy),
+            "liquid": (LiquidControllerAgent, LiquidConfig),
+            "diffusion": (DiffusionExplorerAgent, DiffusionConfig),
+            "ssm": (SSMStabilityAgent, SSMConfig),
+            "snn": (SNNReflexAgent, SNNConfig),
+        }
 
     def propose(self, kind: str, payload: Dict[str, Any], rationale: str) -> ChangeProposal:
         """
@@ -164,9 +187,26 @@ class MetaKernelV2:
 
         elif cp.kind == "add_agent":
             name = cp.payload.get("name")
-            # Graph update only (no logic instantiation as per plan)
+            agent_type = cp.payload.get("agent_type", "symbolic")  # Default to symbolic
+
+            # Create actual agent instance
+            if agent_type in self.agent_factory:
+                agent_class, config_class = self.agent_factory[agent_type]
+
+                # Instantiate config
+                if agent_type in ["symbolic", "jepa", "liquid"]:
+                    config = config_class(device=self.device)
+                else:
+                    config = config_class()
+
+                new_agent = agent_class(name, config)
+                self.agents_dict[name] = new_agent  # Add to main agents dict
+            else:
+                self.audit.emit("meta_reject", {"id": proposal_id, "reason": f"unknown_agent_type_{agent_type}"})
+                return False
+
             self.graph.ensure_node(name)
-            self.audit.emit("meta_commit_add_agent", {"id": proposal_id, "added": name})
+            self.audit.emit("meta_commit_add_agent", {"id": proposal_id, "added": name, "type": agent_type})
             return True
 
         elif cp.kind == "policy_update":
