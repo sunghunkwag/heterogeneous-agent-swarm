@@ -80,6 +80,7 @@ class AdvancedAISystem:
         self.last_spikes = []
         self.last_action = ("None", {})
         self.episode_log = []
+        self.consecutive_idle_count = 0
 
     def _register_tools(self):
         def tool_run_tests(_args):
@@ -157,10 +158,7 @@ class AdvancedAISystem:
         
         tool_name, tool_args, dbg = self.orch.choose(proposals, state, veto)
         
-        # Mapping
-        if tool_name == "APPEND": tool_name = "write_patch"
-        elif tool_name == "TEST": tool_name = "run_tests"
-        elif tool_name == "DELETE": tool_name = "write_patch"
+        # Mapping Removed (Agents now speak Vocabulary)
 
         # E. Execution
         obs, tool_info = self.env.step_tool(tool_name, tool_args)
@@ -299,10 +297,27 @@ def main():
             system.episode_log.append(f"--- EPISODE {episode} (Level {level}) START ---")
             
             steps_limit = 20
+            reward = 0.0 # Default reward
             for step in range(steps_limit):
                 # Run System Step
                 tool, info = system.step(bb)
                 
+                if tool == "emergency_stop":
+                    print("[System] SNN triggered Emergency Stop. Halting Episode.")
+                    reward = -1.0
+                    break # Properly exit the loop
+
+                # Deadlock Prevention
+                if tool in ["wait", "summarize"]:
+                    system.consecutive_idle_count += 1
+                else:
+                    system.consecutive_idle_count = 0
+
+                if system.consecutive_idle_count > 3:
+                    print("[System] Deadlock Detected (>3 Idle Steps). Breaking.")
+                    reward = -0.5
+                    break
+
                 # Logging
                 res = "OK" if info["ok"] else "FAIL"
                 cost = info["cost"]
