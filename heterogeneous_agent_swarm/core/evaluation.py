@@ -5,6 +5,14 @@ from typing import Any, Dict, List
 
 @dataclass
 class EvalResult:
+    """
+    Result of a system evaluation.
+
+    Args:
+        success: Whether the immediate objectives were met.
+        score: Numerical score (-1.0 to 1.0).
+        notes: Additional metadata about the evaluation.
+    """
     success: bool
     score: float
     notes: Dict[str, Any]
@@ -16,6 +24,15 @@ class Evaluator:
     """
 
     def evaluate(self, blackboard: Dict[str, Any]) -> EvalResult:
+        """
+        Assess the current state from the blackboard.
+
+        Args:
+            blackboard: Dictionary representation of the Blackboard.
+
+        Returns:
+            EvalResult object containing score and status.
+        """
         obs = blackboard.get("obs", {})
         signals = blackboard.get("signals", {})
         last_test_ok = bool(obs.get("last_test_ok", False))

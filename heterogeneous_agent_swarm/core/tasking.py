@@ -7,6 +7,7 @@ import time
 
 @dataclass
 class Goal:
+    """High-level objective."""
     goal_id: str
     text: str
     priority: int = 5
@@ -18,6 +19,7 @@ class Goal:
 
 @dataclass
 class Task:
+    """Specific actionable item derived from a goal."""
     task_id: str
     goal_id: str
     text: str
@@ -28,25 +30,36 @@ class Task:
 
 
 class TaskQueue:
+    """
+    Manages goals and tasks in a priority queue.
+    """
     def __init__(self):
         self.goals: Dict[str, Goal] = {}
         self.tasks: Dict[str, Task] = {}
         self.queue: List[str] = []
 
-    def new_goal(self, text: str, priority: int = 5, parent_id: str | None = None, context: Dict[str, Any] | None = None) -> Goal:
+    def new_goal(self, text: str, priority: int = 5, parent_id: Optional[str] = None, context: Optional[Dict[str, Any]] = None) -> Goal:
+        """Create and register a new goal."""
         gid = str(uuid.uuid4())
         g = Goal(goal_id=gid, text=text, priority=priority, parent_id=parent_id, context=context or {})
         self.goals[gid] = g
         return g
 
-    def add_task(self, goal_id: str, text: str, context: Dict[str, Any] | None = None) -> Task:
+    def add_task(self, goal_id: str, text: str, context: Optional[Dict[str, Any]] = None) -> Task:
+        """Create and queue a new task for a goal."""
         tid = str(uuid.uuid4())
         t = Task(task_id=tid, goal_id=goal_id, text=text, context=context or {})
         self.tasks[tid] = t
         self.queue.append(tid)
         return t
 
-    def pop_next(self) -> Task | None:
+    def pop_next(self) -> Optional[Task]:
+        """
+        Get the next highest priority task.
+
+        Returns:
+            The next Task or None if queue is empty.
+        """
         # Highest priority goal first
         if not self.queue:
             return None
