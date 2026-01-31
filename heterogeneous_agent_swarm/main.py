@@ -71,7 +71,7 @@ class AdvancedAISystem:
         
         # 4. Runtime & Memory
         self.orch = Orchestrator(self.graph)
-        self.meta = MetaKernelV2(self.graph, self.audit, self.orch)
+        self.meta = MetaKernelV2(self.graph, self.audit, self.orch, self.agents, device=device)
         self.encoder = SimpleEncoder()
         self.eval = Evaluator()
         self.work = WorkingMemory()

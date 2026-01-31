@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any, Dict
 
 @dataclass
 class Policy:
@@ -9,6 +10,19 @@ class NeuroSymbolicVerifierAgent:
         self.name = name
         self.artifacts = {"verdict": "allow"}
 
+    def _calculate_verification_confidence(self, state: Any, memory: Dict[str, Any]) -> float:
+        """
+        Calculate confidence score for veto decision.
+        Returns float between 0.0 (allow) and 1.0 (definitely veto).
+        """
+        # Simple heuristic: check error_rate from memory
+        error_rate = abs(memory.get("error_rate", 0.0))
+
+        # Normalize to 0-1 range (assuming error_rate typically -1 to 0)
+        confidence = min(1.0, max(0.0, error_rate))
+
+        return confidence
+
     def propose(self, state, memory):
         from ..core.types import Proposal
         obs = state.raw_obs
@@ -16,23 +30,24 @@ class NeuroSymbolicVerifierAgent:
         # Invariant: Must run test if buffer len is 5 before doing anything else?
         # Or veto invalid states.
         
-        # If buffer len is 5 and NOT tested ok, force TEST.
-        # This acts as a veto against "APPEND".
-        if len(obs.get("buffer", [])) == 5 and not obs.get("last_test_ok"):
-             self.artifacts = {"verdict": "deny", "deny_action": "write_patch", "rule_id": "max_len_verify"}
-             return Proposal(
-                action_type="run_tests", action_value=None,
-                confidence=0.99, predicted_value=5.0, estimated_cost=5.0,
-                rationale="RULE:must_verify_max_len",
-                source_agent=self.name
-            )
+        # Calculate confidence based on verification result
+        # Higher confidence = more certain that action should be vetoed
+        confidence = self._calculate_verification_confidence(state, memory)
+
+        # Return proposal with veto_score in artifacts
+        self.artifacts = {
+            "verdict": "deny" if confidence > 0.5 else "allow",
+            "veto_score": confidence,  # Float between 0.0 and 1.0
+            "reason": "verification_failed" if confidence > 0.5 else "verification_passed"
+        }
         
-        self.artifacts = {"verdict": "allow"}
-        # Deterministic fallback
-        val = abs(hash(str(state.raw_obs))) % 10
         return Proposal(
-            action_type="write_patch", action_value=val,
-            confidence=0.1, predicted_value=0.0, estimated_cost=1.0,
-            rationale="compliant",
-            source_agent=self.name
+            source_agent=self.name,
+            action_type="wait",  # Verifier doesn't propose actions, only vetoes
+            action_value={},
+            confidence=confidence,
+            predicted_value=0.0,
+            estimated_cost=0.0,
+            rationale=f"Verification confidence: {confidence:.2f}",
+            artifacts=self.artifacts
         )
