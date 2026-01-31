@@ -7,7 +7,7 @@ This is **not** a production system and **not** a benchmarked AI model.
 
 ## Overview
 
-The system runs multiple heterogeneous agents in parallel, each proposing actions based on different inductive biases (pattern matching, control, constraints, exploration, reflex).
+The system runs multiple heterogeneous agents in parallel, each proposing actions based on different inductive biases (control, constraints, exploration, reflex).
 
 A central orchestrator arbitrates between proposals using confidence, cost, conflict, and diversity signals.  
 A meta-level kernel can modify system behavior (e.g., mode switching) under budget pressure or stagnation.
@@ -18,11 +18,6 @@ A meta-level kernel can modify system behavior (e.g., mode switching) under budg
 - A sandbox for studying cost-aware multi-agent coordination
 - An exploration of meta-control and structural adaptation
 
-## What This Is Not
-
-- Not an AGI system
-- Not a trained machine learning model
-- Not a performance-optimized solution
 
 ## Usage
 
