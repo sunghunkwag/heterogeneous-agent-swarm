@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Dict, Any, Tuple, List
-import random
 import math
 
 # We need types that match what RunnerV2 expects (Proposal)
@@ -27,17 +26,17 @@ class Orchestrator:
         if not alive:
             return "summarize", {"reason": "no_alive_agents"} # Fallback tool
 
-        # Simple weighted choice based on confidence and diversity
-        # (Simplified version of v0.1 logic)
+        # Simple weighted choice based on confidence (Deterministic)
         scores = []
         for n in alive:
             p = proposals[n]
-            # Score = Confidence + some random noise for exploration
-            # p.confidence is float
-            score = p.confidence * 1.0 + random.uniform(0, 0.2)
+            # Score = Confidence only. No random noise.
+            score = p.confidence * 1.0
             scores.append((score, n, p))
 
-        scores.sort(key=lambda x: x[0], reverse=True)
+        # Sort by score (desc) then by name (asc) for determinism
+        # Using tuple (-score, name) for ascending sort
+        scores.sort(key=lambda x: (-x[0], x[1]))
         winner = scores[0]
         
         # Action is explicitly the 'action_type' string for tools in v0.2?

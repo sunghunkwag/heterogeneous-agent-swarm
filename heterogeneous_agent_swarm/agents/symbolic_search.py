@@ -5,11 +5,11 @@ from ..core.types import EncodedState, Proposal
 from ..agents.dsl_solver import DSLSolver
 
 @dataclass
-class LLMConfig:
+class SymbolicConfig:
     device: str = "cpu"
 
-class TransformerLLMAgent:
-    def __init__(self, name: str, config: LLMConfig):
+class SymbolicSearchAgent:
+    def __init__(self, name: str, config: SymbolicConfig):
         self.name = name
         self.config = config
         self.plan_queue = [] # Queue of pending actions
@@ -65,12 +65,12 @@ class TransformerLLMAgent:
             
             # Failure signal (No random fallback)
             return Proposal(
-                action_type="write_patch",
-                action_value={"x": 0, "y": 0, "color": 0}, # Dummy value
+                action_type="wait",
+                action_value=None,
                 confidence=0.0,
                 predicted_value=0.0,
                 estimated_cost=0.0,
-                rationale=f"ARC: Solver Failed. Waiting. Thought: {thought_power:.2f}",
+                rationale=f"ARC: Solver Failed. WAITING/IDLE. Thought: {thought_power:.2f}",
                 source_agent=self.name
             )
 
@@ -138,11 +138,11 @@ class TransformerLLMAgent:
 
         # Failure signal
         return Proposal(
-            action_type="APPEND",
-            action_value=0,
+            action_type="wait",
+            action_value=None,
             confidence=0.0,
             predicted_value=0.0,
             estimated_cost=1.0,
-            rationale="No pattern detected",
+            rationale="No pattern detected. WAITING/IDLE.",
             source_agent=self.name
         )

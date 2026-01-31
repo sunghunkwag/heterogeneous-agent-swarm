@@ -25,9 +25,10 @@ class SSMStabilityAgent:
                 source_agent=self.name
             )
             
-        import random
+        # Deterministic fallback
+        val = abs(hash(str(state.raw_obs))) % 10
         return Proposal(
-            action_type="APPEND", action_value=random.randint(0, 9),
+            action_type="APPEND", action_value=val,
             confidence=0.2, predicted_value=0.1, estimated_cost=1.0,
             rationale="stable",
             source_agent=self.name

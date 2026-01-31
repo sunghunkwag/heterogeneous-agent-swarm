@@ -2,7 +2,6 @@ import time
 import argparse
 import sys
 import os
-import random
 import numpy as np
 from datetime import datetime
 
@@ -35,7 +34,7 @@ from heterogeneous_agent_swarm.core.memory import WorkingMemory, EpisodicMemory,
 from heterogeneous_agent_swarm.runtime.runner_v2 import SimpleEncoder
 
 # Import Agents
-from heterogeneous_agent_swarm.agents.transformer_llm import TransformerLLMAgent, LLMConfig
+from heterogeneous_agent_swarm.agents.symbolic_search import SymbolicSearchAgent, SymbolicConfig
 from heterogeneous_agent_swarm.agents.jepa_world_model import JEPAWorldModelAgent, JEPAConfig
 from heterogeneous_agent_swarm.agents.neuro_symbolic import NeuroSymbolicVerifierAgent, Policy
 from heterogeneous_agent_swarm.agents.liquid_controller import LiquidControllerAgent, LiquidConfig
@@ -92,17 +91,21 @@ class AdvancedAISystem:
         def tool_summarize(_args):
             obs, out = self.sandbox.step("summarize")
             return ToolResult(ok=True, cost=out.cost, output=out.info)
+        def tool_wait(_args):
+            # Idle action, low cost, no effect
+            return ToolResult(ok=True, cost=0.01, output={"status": "waiting"})
 
         self.reg.register(ToolSpec("run_tests", "Verify System Integrity.", tool_run_tests))
         self.reg.register(ToolSpec("write_patch", "Self-Modify Codebase.", tool_write_patch))
         self.reg.register(ToolSpec("summarize", "Reflect & Conserve.", tool_summarize))
+        self.reg.register(ToolSpec("wait", "Idle.", tool_wait))
 
     def _init_agents(self, device):
         def add(a):
             self.agents[a.name] = a
             self.graph.ensure_node(a.name)
 
-        add(TransformerLLMAgent("transformer_agent", LLMConfig(device=device)))
+        add(SymbolicSearchAgent("symbolic_agent", SymbolicConfig(device=device)))
         add(JEPAWorldModelAgent("jepa_agent", JEPAConfig(device=device)))
         add(NeuroSymbolicVerifierAgent("neurosym_agent", Policy()))
         add(LiquidControllerAgent("liquid_agent", LiquidConfig(device=device)))
@@ -117,7 +120,7 @@ class AdvancedAISystem:
             "time_since_success": 0.1, 
             "error_rate": -1.0 * self.eval.evaluate(bb.__dict__).score,
             "budget_slope": -0.1,
-            "entropy": random.random()
+            "entropy": abs(np.sin(len(self.episode_log))) # Deterministic entropy proxy
         }
         interrupts = self.snn.process_signals(snn_inputs)
         self.last_spikes = interrupts
