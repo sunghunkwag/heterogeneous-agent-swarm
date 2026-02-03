@@ -34,6 +34,7 @@ from heterogeneous_agent_swarm.core.audit import AuditLog
 from heterogeneous_agent_swarm.core.evaluation import Evaluator
 from heterogeneous_agent_swarm.core.memory import WorkingMemory, EpisodicMemory, SemanticMemory
 from heterogeneous_agent_swarm.runtime.runner_v2 import SimpleEncoder
+from heterogeneous_agent_swarm.core.results import ResultsManager, EpisodeResult
 
 # Import Agents
 from heterogeneous_agent_swarm.agents.symbolic_search import SymbolicSearchAgent, SymbolicConfig
@@ -94,6 +95,13 @@ class AdvancedAISystem:
         self.start_time = time.time()
         self.budget_history = []
         self.action_history = []
+
+        # Stats
+        self.deadlock_recovery_stats = {
+            "total_deadlocks": 0,
+            "successful_recoveries": 0,
+            "recovery_rate": 0.0
+        }
 
         # Previous state tracking for JEPA training
         self.prev_system_state = None
@@ -185,7 +193,7 @@ class AdvancedAISystem:
 
         return combined
 
-    def step(self, bb: Blackboard):
+    def step(self, bb: Blackboard, force_strategy: str = None):
         """Execute one cognitive cycle."""
         # A. SNN Check (Nervous System)
         current_time = time.time()
@@ -233,7 +241,8 @@ class AdvancedAISystem:
         if p_neuro and p_neuro.artifacts.get("verdict") == "deny":
             veto = p_neuro.artifacts # Pass full artifacts for veto_score check
         
-        tool_name, tool_args, dbg = self.orch.choose(proposals, state, veto)
+        # Pass force_strategy to orchestrator
+        tool_name, tool_args, dbg = self.orch.choose(proposals, state, veto, force_strategy=force_strategy)
         
         # Mapping Removed (Agents now speak Vocabulary)
 
@@ -379,6 +388,10 @@ def main():
     system = AdvancedAISystem(device=args.device, arc_mode=args.arc)
     layout = make_layout()
     
+    # Init results manager
+    results_manager = ResultsManager(output_dir="benchmark_results")
+    run_start_time = time.time()
+
     if args.arc:
         title_text = " ADVANCED AI SYSTEM: ARC AGI 2 BENCHMARK "
     elif args.benchmark:
@@ -416,8 +429,15 @@ def main():
             
             system.episode_log.append(f"--- EPISODE {episode} (Level {level}) START ---")
             
+            # Track audit events for this episode
+            episode_start_event_count = len(system.audit.events)
+
             steps_limit = 20
             reward = 0.0 # Default reward
+            deadlock_count_this_ep = 0
+            recovery_count_this_ep = 0
+
+            step = 0 # Initialize step counter
             for step in range(steps_limit):
                 # Run System Step
                 tool, info = system.step(bb)
@@ -433,10 +453,58 @@ def main():
                 else:
                     system.consecutive_idle_count = 0
 
+                # Improved Deadlock Detection & Recovery
                 if system.consecutive_idle_count > 3:
-                    print("[System] Deadlock Detected (>3 Idle Steps). Breaking.")
-                    reward = -0.5
-                    break
+                    deadlock_count_this_ep += 1
+                    system.deadlock_recovery_stats["total_deadlocks"] += 1
+
+                    deadlock_info = {
+                        "step": step,
+                        "action_sequence": system.action_history[-5:],
+                        "time_in_deadlock": system.consecutive_idle_count,
+                        "episode": episode
+                    }
+                    system.episode_log.append(f"[DEADLOCK DETECTED] {deadlock_info}")
+                    system.audit.emit("deadlock_detected", deadlock_info)
+
+                    # Try recovery: force time-varying random selection
+                    print(f"[System] Attempting deadlock recovery (Ep {episode}, Step {step})...")
+                    system.episode_log.append("[RECOVERY] Switching to time-varying random selection strategy")
+
+                    system.consecutive_idle_count = 0 # Reset counter to give recovery a chance
+
+                    # Give system 3 more steps to escape using random strategy
+                    recovery_steps = 3
+                    escaped = False
+                    for _ in range(recovery_steps):
+                        # Force random strategy
+                        r_tool, r_info = system.step(bb, force_strategy="random")
+
+                        # Log it
+                        log_msg = f"[Ep{episode}:St{step}+Rec] {r_tool} -> {r_info.get('ok')} (Recovery)"
+                        system.episode_log.append(log_msg)
+
+                        if r_tool not in ["wait", "summarize"]:
+                            system.episode_log.append("[RECOVERY] SUCCESS - Escaped deadlock")
+                            system.deadlock_recovery_stats["successful_recoveries"] += 1
+                            recovery_count_this_ep += 1
+                            escaped = True
+                            break
+
+                        # Update UI during recovery
+                        time.sleep(0.1)
+
+                    if escaped:
+                         # Calculate current rate
+                        total = system.deadlock_recovery_stats["total_deadlocks"]
+                        succ = system.deadlock_recovery_stats["successful_recoveries"]
+                        system.deadlock_recovery_stats["recovery_rate"] = succ / total if total > 0 else 0.0
+                        continue # Continue main loop
+                    else:
+                        # If still stuck after recovery, then give up
+                        print("[System] Recovery failed. Deadlock unresolvable.")
+                        reward = -0.5
+                        break
 
                 # Logging
                 res = "OK" if info["ok"] else "FAIL"
@@ -468,10 +536,18 @@ def main():
             task_loss = max(0.0, 1.0 - reward)  # Convert [-1,1] reward to  loss
 
             # Meta-train each agent that has trainable parameters
+            meta_train_results = {}
             for agent_name in system.agents:
-                if hasattr(system.agents[agent_name], 'train_step'):
-                    # This agent has learned (e.g., JEPA)
-                    system.meta.meta_train_agent(agent_name, task_loss)
+                # Use updated meta_train_agent which returns impact data
+                impact = system.meta.meta_train_agent(agent_name, task_loss)
+                if impact:
+                    meta_train_results[agent_name] = impact
+
+            # Log summary
+            if meta_train_results:
+                # simplify log for readability
+                short_res = {k: f"{v['old_lr']:.2e}->{v['new_lr']:.2e}" for k,v in meta_train_results.items()}
+                system.episode_log.append(f"[META-TRAIN] Impact: {short_res}")
 
             # === Neural Architecture Search trigger ===
             # Every 3 episodes, check for underperforming agents
@@ -485,7 +561,35 @@ def main():
                         if system.meta._quorum_ok(proposal):
                             system.meta.commit(proposal.proposal_id)
             
+            # Record episode result
+            # Calculate events just for this episode
+            ep_events = system.audit.events[episode_start_event_count:]
+
+            ep_result = EpisodeResult(
+                episode_id=episode,
+                level=level,
+                completed=bb.obs.get("last_test_ok", False),
+                reward=reward,
+                total_steps=step + 1,
+                total_cost=sum(system.budget_history[-step:]) if step > 0 else 0,
+                deadlock_count=deadlock_count_this_ep,
+                recovery_count=recovery_count_this_ep,
+                meta_train_events=len([e for e in ep_events if e["type"] in ["meta_train", "meta_train_impact"]]),
+                arch_mod_events=len([e for e in ep_events if e["type"] == "arch_mod_commit"])
+            )
+            results_manager.record_episode(ep_result)
+
             episode += 1
+
+    # Finalize benchmark
+    results_filename = results_manager.finalize_benchmark(
+        run_id=f"benchmark_{int(time.time())}",
+        total_runtime=time.time() - run_start_time,
+        meta_train_count=len([e for e in system.audit.events if e["type"] in ["meta_train", "meta_train_impact"]]),
+        arch_mod_count=len([e for e in system.audit.events if e["type"] == "arch_mod_commit"]),
+        deadlock_recovery_rate=system.deadlock_recovery_stats.get("recovery_rate", 0.0)
+    )
+    print(f"Benchmark results saved to: {results_filename}")
                 
     print(f"System Halted. Benchmark Complete." if args.benchmark else "System Halted. Optimization Complete.")
 

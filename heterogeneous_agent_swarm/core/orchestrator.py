@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Dict, Any, Tuple, List, Optional
 import hashlib
 import numpy as np
+import time
 from collections import Counter
 from .graph import AgentGraph
 from .types import Proposal
@@ -22,6 +23,7 @@ class Orchestrator:
         self.memory = memory
         self.veto_threshold = 0.5
         self.selection_strategy = "weighted_perf"
+        self.step_counter = 0  # Time-varying factor
 
     def update_policy(self, veto_threshold: Optional[float] = None, selection_strategy: Optional[str] = None) -> None:
         """
@@ -38,7 +40,8 @@ class Orchestrator:
             if selection_strategy in ["weighted_perf", "consensus", "random"]:
                 self.selection_strategy = selection_strategy
 
-    def choose(self, proposals: Dict[str, Proposal], state: Any, veto: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    def choose(self, proposals: Dict[str, Proposal], state: Any, veto: Optional[Dict[str, Any]] = None,
+               force_strategy: Optional[str] = None) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
         """
         Select the winning action based on the current policy.
 
@@ -46,6 +49,7 @@ class Orchestrator:
             proposals: Dictionary mapping agent names to their Proposals.
             state: Current system state (unused in selection logic currently).
             veto: Optional veto signal from verification agents.
+            force_strategy: Override selection strategy for this step (e.g. "random" for deadlock recovery).
 
         Returns:
             Tuple containing:
@@ -53,6 +57,8 @@ class Orchestrator:
             - tool_args (dict)
             - debug_info (dict)
         """
+        self.step_counter += 1
+
         # 1. Veto Check
         if veto:
             veto_score = veto.get("veto_score")
@@ -96,24 +102,27 @@ class Orchestrator:
         winner_proposal: Optional[Proposal] = None
         selection_reason = ""
         
+        # Determine effective strategy
+        strategy = force_strategy if force_strategy else self.selection_strategy
+
         # 2. Strategy Execution
-        if self.selection_strategy == "random":
-            # Deterministic random: hash-based selection
-            # Use state hash to pick deterministically but pseudo-randomly
+        if strategy == "random":
+            # Time-varying random: hash-based selection mixed with step count
             if alive_proposals:
                 # Sort by name for consistent ordering
                 items = sorted(alive_proposals.items(), key=lambda x: x[0])
 
-                # Create deterministic hash from state
+                # Create hash from state AND time/step to ensure variety
                 state_str = str(state)
-                hash_input = f"{state_str}_{len(items)}".encode()
+                # Include step_counter and system time in hash input
+                hash_input = f"{state_str}_{len(items)}_{self.step_counter}_{time.time()}".encode()
                 hash_val = int(hashlib.md5(hash_input).hexdigest(), 16)
 
                 choice_idx = hash_val % len(items)
                 choice_name, winner_proposal = items[choice_idx]
-                selection_reason = "deterministic_random_hash"
+                selection_reason = "time_varying_random_hash"
 
-        elif self.selection_strategy == "consensus":
+        elif strategy == "consensus":
             # Majority vote on tool_name
             tool_counts = Counter(p.action_type for p in alive_proposals.values())
             total_votes = len(alive_proposals)
@@ -165,7 +174,8 @@ class Orchestrator:
             "rationale": winner_proposal.rationale,
             "all_proposals": {n: p.action_type for n, p in alive_proposals.items()},
             "votes": {n: getattr(p, "action_type", "unknown") for n, p in alive_proposals.items()},
-            "memory_bias": memory_bias  # NEW: Show memory influence
+            "memory_bias": memory_bias,
+            "strategy": strategy
         }
 
         return tool_name, tool_args, debug_info

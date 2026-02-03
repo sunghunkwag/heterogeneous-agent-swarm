@@ -8,6 +8,15 @@ class SNNReflexAgent:
     def __init__(self, name: str, config: SNNConfig):
         self.name = name
 
+    def get_capacity_metric(self) -> float:
+        return 0.5
+
+    def increase_capacity(self, factor: float = 1.0) -> dict:
+        return {"action": "increase_capacity", "status": "not_applicable"}
+
+    def decrease_capacity(self, factor: float = 1.0) -> dict:
+        return {"action": "decrease_capacity", "status": "not_applicable"}
+
     def propose(self, state, memory):
         from ..core.types import Proposal
         # Reflex

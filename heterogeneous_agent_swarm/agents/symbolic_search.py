@@ -7,15 +7,51 @@ from ..agents.dsl_solver import DSLSolver
 @dataclass
 class SymbolicConfig:
     device: str = "cpu"
+    max_search_depth: int = 2
 
 class SymbolicSearchAgent:
     def __init__(self, name: str, config: SymbolicConfig):
         self.name = name
         self.config = config
         self.plan_queue = [] # Queue of pending actions
-        self.solver = DSLSolver()
+        self.solver = DSLSolver(max_depth=config.max_search_depth)
         self.last_solved_task = None
         
+    def get_capacity_metric(self) -> float:
+        """Return normalized capacity (max depth)."""
+        return self.config.max_search_depth / 5.0
+
+    def increase_capacity(self, factor: float = 1.0) -> dict:
+        """Increase max search depth."""
+        old_depth = self.config.max_search_depth
+        # Increment by 1 step regardless of factor for discrete depth
+        new_depth = old_depth + 1
+
+        self.config.max_search_depth = new_depth
+        self.solver = DSLSolver(max_depth=new_depth)
+
+        return {
+            "action": "increase_capacity",
+            "old_depth": old_depth,
+            "new_depth": new_depth
+        }
+
+    def decrease_capacity(self, factor: float = 1.0) -> dict:
+        """Decrease max search depth."""
+        old_depth = self.config.max_search_depth
+        if old_depth <= 1:
+            return {"action": "decrease_capacity", "status": "noop_min_depth"}
+
+        new_depth = old_depth - 1
+        self.config.max_search_depth = new_depth
+        self.solver = DSLSolver(max_depth=new_depth)
+
+        return {
+            "action": "decrease_capacity",
+            "old_depth": old_depth,
+            "new_depth": new_depth
+        }
+
     def propose(self, state: EncodedState, bus_memory: Dict[str, Any]) -> Proposal:
         obs = state.raw_obs
         system_thought = np.array(bus_memory.get("system_thought", [0.0]*16))

@@ -1,51 +1,53 @@
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Dict, List
 import time
-
-
-@dataclass
-class AuditRecord:
-    """
-    Single entry in the audit log.
-
-    Args:
-        ts: Timestamp of the event.
-        event: Event name/type.
-        payload: Detailed data associated with the event.
-    """
-    ts: float
-    event: str
-    payload: Dict[str, Any]
-
+from typing import Dict, Any, List
 
 class AuditLog:
     """
-    Immutable ledger of system events for debugging and analysis.
+    Central audit system for tracking significant swarm events.
+    Now includes history tracking for meta-learning impact analysis.
     """
     def __init__(self):
-        """Initialize the audit log."""
-        self.records: List[AuditRecord] = []
+        self.events = []
+        self.meta_train_history = []  # New: track meta-training events
 
-    def emit(self, event: str, payload: Dict[str, Any]) -> None:
+    def emit(self, event_type: str, data: Dict[str, Any]) -> None:
         """
-        Record a new event.
+        Record an event.
 
         Args:
-            event: Name of the event.
-            payload: Data dictionary for the event.
+            event_type: Category of event (e.g. "tool_use", "meta_train")
+            data: Structured data describing the event
         """
-        rec = AuditRecord(ts=time.time(), event=event, payload=payload)
-        self.records.append(rec)
+        self.events.append({
+            "type": event_type,
+            "data": data,
+            "timestamp": time.time()
+        })
 
-    def tail(self, n: int = 5) -> List[AuditRecord]:
+        # Track meta-training events separately for easy lookup
+        if event_type == "meta_train" or event_type == "meta_train_impact":
+            self.meta_train_history.append(data)
+
+    def get_meta_train_impact(self, agent_name: str, window_size: int = 5) -> Dict[str, Any]:
         """
-        Get the most recent records.
+        Retrieve recent meta-train events and their performance correlations.
 
         Args:
-            n: Number of records to retrieve.
+            agent_name: Name of agent to query
+            window_size: Number of recent events to retrieve
 
         Returns:
-            List of the last n AuditRecords.
+            Dict containing count and list of recent events
         """
-        return self.records[-n:]
+        recent = [
+            e for e in self.meta_train_history
+            if e.get("agent") == agent_name
+        ][-window_size:]
+
+        return {
+            "count": len(recent),
+            "events": recent
+        }
+
+    def get_logs(self) -> List[Dict[str, Any]]:
+        return self.events

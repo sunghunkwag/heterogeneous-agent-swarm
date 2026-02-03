@@ -10,6 +10,15 @@ class DiffusionExplorerAgent:
     def __init__(self, name: str, config: DiffusionConfig):
         self.name = name
 
+    def get_capacity_metric(self) -> float:
+        return 0.5
+
+    def increase_capacity(self, factor: float = 1.0) -> dict:
+        return {"action": "increase_capacity", "status": "not_applicable"}
+
+    def decrease_capacity(self, factor: float = 1.0) -> dict:
+        return {"action": "decrease_capacity", "status": "not_applicable"}
+
     def propose(self, state: EncodedState, memory: dict) -> Proposal:
         obs = state.raw_obs
         system_thought = np.array(memory.get("system_thought", [0.0]*16))
