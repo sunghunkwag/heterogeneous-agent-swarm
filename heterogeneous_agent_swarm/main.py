@@ -5,6 +5,7 @@ import os
 import numpy as np
 from datetime import datetime
 from collections import Counter
+from typing import Dict
 
 # Ensure we can import heterogeneous_agent_swarm
 sys.path.append(os.getcwd())
@@ -70,7 +71,12 @@ class AdvancedAISystem:
         self.snn = EventSNN()
         
         # 4. Runtime & Memory
+        # Episodic Memory for experience storage
+        self.episodic = EpisodicMemory(capacity=1000)
+
         self.orch = Orchestrator(self.graph)
+        self.orch.memory = self.episodic  # Late binding to enable memory bias
+
         self.meta = MetaKernelV2(self.graph, self.audit, self.orch, self.agents, device=device)
         self.encoder = SimpleEncoder()
         self.eval = Evaluator()
@@ -88,6 +94,13 @@ class AdvancedAISystem:
         self.start_time = time.time()
         self.budget_history = []
         self.action_history = []
+
+        # Previous state tracking for JEPA training
+        self.prev_system_state = None
+        self.prev_action_name = None
+
+        # JEPA config update
+        self.agents["jepa_agent"].config.input_dim = 16  # Match GNN dim
 
     def _register_tools(self):
         def tool_run_tests(_args):
@@ -140,6 +153,37 @@ class AdvancedAISystem:
             p = count / total
             entropy -= p * np.log2(p)
         return entropy
+
+    def _get_system_state_vector(self) -> np.ndarray:
+        """Get current system state as vector for JEPA."""
+        return self.system_thought.copy()
+
+    def _calculate_combined_reward(self, obs: Dict, prev_state: np.ndarray,
+                                   action_name: str, current_state: np.ndarray) -> float:
+        """
+        Calculate combined extrinsic + intrinsic reward.
+        """
+        # Extrinsic reward
+        if obs.get("last_test_ok"):
+            extrinsic = 1.0
+        elif obs.get("error"):
+            extrinsic = -0.5
+        else:
+            extrinsic = -0.01  # Small penalty for time passing
+
+        # Intrinsic reward (curiosity from JEPA)
+        jepa_agent = self.agents.get("jepa_agent")
+        if jepa_agent and hasattr(jepa_agent, 'get_curiosity_reward'):
+            intrinsic = jepa_agent.get_curiosity_reward(prev_state, action_name, current_state)
+            # Normalize intrinsic to [-1, 1] range approximately
+            intrinsic = min(1.0, max(-1.0, intrinsic * 10))
+        else:
+            intrinsic = 0.0
+
+        # Combined (70% extrinsic, 30% intrinsic for exploration)
+        combined = 0.7 * extrinsic + 0.3 * intrinsic
+
+        return combined
 
     def step(self, bb: Blackboard):
         """Execute one cognitive cycle."""
@@ -211,6 +255,42 @@ class AdvancedAISystem:
         self.work.set("last_action_params", tool_args)
         self.last_action = (tool_name, tool_args)
         
+        # === JEPA Training & Memory Storage ===
+        current_state = self._get_system_state_vector()
+
+        if self.prev_system_state is not None and self.prev_action_name is not None:
+            # Train JEPA on transition
+            jepa_agent = self.agents.get("jepa_agent")
+            if jepa_agent and hasattr(jepa_agent, 'train_step'):
+                # Calculate reward for this transition
+                reward = self._calculate_combined_reward(
+                    obs, self.prev_system_state, self.prev_action_name, current_state
+                )
+
+                # JEPA training step
+                pred_error = jepa_agent.train_step(
+                    self.prev_system_state,
+                    self.prev_action_name,
+                    current_state,
+                    reward
+                )
+
+                # Store to episodic memory
+                self.episodic.add(
+                    vector=self.prev_system_state,
+                    metadata={
+                        "action": self.prev_action_name,
+                        "reward": reward,
+                        "pred_error": pred_error,
+                        "next_vector": current_state.tolist(),
+                        "timestamp": time.time()
+                    }
+                )
+
+        # Update previous state for next iteration
+        self.prev_system_state = current_state.copy()
+        self.prev_action_name = tool_name
+
         return tool_name, tool_info
 
 
@@ -379,9 +459,31 @@ def main():
             else:
                 reward = -0.1
             
-            # Online Learning (Hebbian)
+            # === Online Learning (Hebbian) ===
             weight_mag = system.gnn.train(reward)
             system.episode_log.append(f"[BRAIN] Synaptic Update: Reward={reward}, Weights={weight_mag:.4f}")
+
+            # === Meta-Learning: Adapt agent learning rates ===
+            # Calculate task loss from episode (negative reward)
+            task_loss = max(0.0, 1.0 - reward)  # Convert [-1,1] reward to  loss
+
+            # Meta-train each agent that has trainable parameters
+            for agent_name in system.agents:
+                if hasattr(system.agents[agent_name], 'train_step'):
+                    # This agent has learned (e.g., JEPA)
+                    system.meta.meta_train_agent(agent_name, task_loss)
+
+            # === Neural Architecture Search trigger ===
+            # Every 3 episodes, check for underperforming agents
+            if episode % 3 == 0:
+                for agent_name in system.agents:
+                    proposal = system.meta.suggest_architecture_modification(agent_name)
+                    if proposal:
+                        # Auto-vote for testing (in real system, use actual voting)
+                        system.meta.vote(proposal.proposal_id, "orchestrator", True)
+                        # Try to commit if quorum met (simplified)
+                        if system.meta._quorum_ok(proposal):
+                            system.meta.commit(proposal.proposal_id)
             
             episode += 1
                 
