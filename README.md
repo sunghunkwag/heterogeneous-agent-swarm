@@ -1,46 +1,35 @@
 # Heterogeneous Agent Swarm
 
-This repository contains a **research prototype** for experimenting with heterogeneous multi-agent swarms under explicit cost, budget, and control constraints.
+Multi-agent system with structural self-modification.
 
-⚠️ **Status:** Work-in-progress research code.  
-This is **not** a production system and **not** a benchmarked AI model.
+## Agents
 
-## Overview
+- SymbolicSearch, JEPAWorldModel, NeuroSymbolic, LiquidController, DiffusionExplorer, SSMStability, SNNReflex
 
-The system runs multiple heterogeneous agents in parallel, each proposing actions based on different inductive biases (control, constraints, exploration, reflex).
+## Components
 
-A central orchestrator arbitrates between proposals using confidence, cost, conflict, and diversity signals.  
-A meta-level kernel can modify system behavior (e.g., mode switching) under budget pressure or stagnation.
+- **Orchestrator**: Proposal aggregation, uncertainty-driven gating
+- **MetaKernel**: Agent suppression, capacity modification
+- **GNN**: State aggregation
 
-## What This Is
+## Features
 
-- A conceptual architecture prototype
-- A sandbox for studying cost-aware multi-agent coordination
-- An exploration of meta-control and structural adaptation
+- Agent suppression after 3 failures (loss > 0.8), recovery at loss < 0.2
+- Panic mode (uncertainty > 0.1) blocks risky agents
+- Runtime capacity adjustment with LR warmup
+- Protocol-based interfaces, type validation
 
-## Recent Fixes & Improvements
+## Updates  
 
-- **Bug Fixes:** Resolved `TypeError` in meta-learning param access and silenced PyTorch `std()` warnings.
-- **RSI Foundation:** Implemented actual architecture modifications (e.g., neural capacity expansion) and meta-learning impact tracking.
-- **Resilience:** Added deadlock recovery mechanism using time-varying random selection strategies.
-- **Metrics:** Added structured JSON logging for benchmark results.
+- JEPA: prediction-error selection, warmup/momentum stabilization
+- C-Stage: failure tracking, uncertainty gating
+- Protocol decoupling, full type hints
 
 ## Usage
 
-Run the benchmark mode:
-
 ```bash
 python -m heterogeneous_agent_swarm.main --benchmark
-```
 
-### Interpreting Results
-
-Results are saved to `benchmark_results/benchmark_<TIMESTAMP>.json`. Key metrics include:
-
-- `success_rate`: Percentage of episodes solved.
-- `deadlock_recovery_rate`: Success rate of escaping detected deadlocks.
-- `meta_train_total_count`: Number of times agent learning rates were adapted.
-- `arch_mod_total_count`: Number of times agent architectures were modified (NAS).
 
 ## License
 
