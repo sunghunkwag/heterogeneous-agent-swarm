@@ -580,8 +580,8 @@ def main():
             # Check for suppression
             meta_suppress_results = {}
             for agent_name in system.agents:
-                # Use suppress_agent
-                impact = system.meta.suppress_agent(agent_name, task_loss)
+                # Use enforce_agent_constraints (renamed from suppress_agent)
+                impact = system.meta.enforce_agent_constraints(agent_name, task_loss)
                 if impact:
                     meta_suppress_results[agent_name] = impact
 

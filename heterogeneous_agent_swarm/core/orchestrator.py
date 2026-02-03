@@ -71,33 +71,50 @@ class Orchestrator:
             elif veto.get("deny", False):
                  return "wait", {}, {"reason": "vetoed_binary"}
 
-        # 1.5 C-Stage: Panic Mode (High Uncertainty Veto)
-        if system_uncertainty > 0.3:
-            # High uncertainty -> Force NeuroSymbolic or Symbolic
-            preferred = ["neurosym_agent", "symbolic_agent"]
-            candidates = {n: p for n, p in proposals.items() if n in preferred and self.graph.node_alive.get(n, False)}
-            if candidates:
-                # Force selection of one of these
-                winner_name = max(candidates, key=lambda n: candidates[n].confidence)
-                winner_proposal = candidates[winner_name]
-                return winner_proposal.action_type, {"value": winner_proposal.action_value}, {
-                    "reason": "panic_mode_gating",
-                    "uncertainty": system_uncertainty,
-                    "winner": winner_name
-                }
-            # If preferred agents are not available, fall through but log warning
-            # (or could force wait, but maybe better to let others try?)
-
-        # Filter for alive AND non-suppressed agents
-        alive_proposals = {n: p for n, p in proposals.items()
-                           if self.graph.node_alive.get(n, False) and not self.graph.node_suppressed.get(n, False)}
-
-        # C-Stage: Convergence Mode (Low Uncertainty) -> Block Diffusion
-        if system_uncertainty < 0.05:
-            alive_proposals = {n: p for n, p in alive_proposals.items() if n != "diffusion_agent"}
+        # 0. Pre-filter: Remove Suppressed Agents (Hard Silence)
+        alive_proposals = {
+            n: p for n, p in proposals.items()
+            if self.graph.node_alive.get(n, False) and not self.graph.node_suppressed.get(n, False)
+        }
 
         if not alive_proposals:
-            return "summarize", {"reason": "no_available_agents"}, {"reason": "no_available_agents"}
+            return "summarize", {"reason": "all_agents_dead_or_suppressed"}, {"reason": "no_valid_proposals"}
+
+        # --- C-STAGE: GNN GATING LOGIC ---
+        # Get system uncertainty from state (must be populated by runner)
+        # Note: arg passed as system_uncertainty
+
+        # Thresholds
+        UNCERTAINTY_HIGH = 0.1  # High disagreement -> Chaos
+        UNCERTAINTY_LOW = 0.01  # Low disagreement -> Convergence
+
+        gating_decision = "none"
+
+        # Rule 1: High Uncertainty -> Force Verification/Safety
+        if system_uncertainty > UNCERTAINTY_HIGH:
+            gating_decision = "force_safety"
+            # Prioritize Verifier or Stability agents
+            safety_agents = ["neurosym_agent", "ssm_agent", "symbolic_agent"]
+            safety_proposals = {n: p for n, p in alive_proposals.items() if n in safety_agents}
+
+            if safety_proposals:
+                # Override: Pick best safety proposal directly
+                winner_proposal = max(safety_proposals.values(), key=lambda p: p.confidence)
+                return winner_proposal.action_type, {"value": winner_proposal.action_value}, {
+                    "winner": winner_proposal.source_agent,
+                    "reason": f"GNN_VETO_HIGH_UNCERTAINTY ({system_uncertainty:.4f})",
+                    "mode": "force_safety"
+                }
+
+        # Rule 2: Low Uncertainty (Convergence) -> Block Diffusion (Distraction)
+        elif system_uncertainty < UNCERTAINTY_LOW:
+            gating_decision = "convergence_lock"
+            # Mask Diffusion Explorer
+            if "diffusion_agent" in alive_proposals:
+                del alive_proposals["diffusion_agent"]
+
+            if not alive_proposals:
+                 return "wait", {}, {"reason": "convergence_lock_empty"}
 
         # Memory-based bias initialization
         memory_bias: Dict[str, float] = {}
@@ -197,7 +214,9 @@ class Orchestrator:
             "all_proposals": {n: p.action_type for n, p in alive_proposals.items()},
             "votes": {n: getattr(p, "action_type", "unknown") for n, p in alive_proposals.items()},
             "memory_bias": memory_bias,
-            "strategy": strategy
+            "strategy": strategy,
+            "uncertainty": system_uncertainty,
+            "gating": gating_decision
         }
 
         return tool_name, tool_args, debug_info
