@@ -31,6 +31,4 @@ Multi-agent system with structural self-modification.
 python -m heterogeneous_agent_swarm.main --benchmark
 
 
-## License
 
-MIT
