@@ -1,0 +1,41 @@
+/app/heterogeneous_agent_swarm/agents/jepa_world_model.py:162: UserWarning: std(): degrees of freedom is <= 0. Correction should be strictly less than the reduction factor (input numel divided by output numel). (Triggered internally at /pytorch/aten/src/ATen/native/ReduceOps.cpp:1857.)
+  var_loss = torch.mean(F.relu(1.0 - torch.std(z_t, dim=0))) + \
+/app/heterogeneous_agent_swarm/agents/jepa_world_model.py:163: UserWarning: std(): degrees of freedom is <= 0. Correction should be strictly less than the reduction factor (input numel divided by output numel). (Triggered internally at /pytorch/aten/src/ATen/native/ReduceOps.cpp:1857.)
+  torch.mean(F.relu(1.0 - torch.std(z_t1_target, dim=0)))
+[Sandbox] Setup Level 1 (Arithmetic Progression): Target=[4, 5, 6, 7, 8]
+[Sandbox] Setup Level 1 (Arithmetic Progression): Target=[1, 3, 5, 7, 9]
+[System] Deadlock Detected (>3 Idle Steps). Breaking.
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                      ADVANCED AI SYSTEM: BENCHMARK MODE                      ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+╭────── GNN System Consciousness ──────╮╭──────── Swarm Body (Agents) ─────────╮
+│ ╭───────╮╭───────╮╭───────╮╭───────╮ ││                                      │
+│ │ 0.74  ││ 0.41  ││ 0.08  ││ -0.04 │ ││   Agent             Status   Perf    │
+│ ╰───────╯╰───────╯╰───────╯╰───────╯ ││  ─────────────────────────────────   │
+│ ╭───────╮╭───────╮╭───────╮╭───────╮ ││   symbolic_agent    ACTIVE   0.50    │
+╰──────────────────────────────────────╯│   jepa_agent        ACTIVE   0.50    │
+╭───────── SNN Nervous System ─────────╮│   neurosym_agent    ACTIVE   0.50    │
+│      ??GARBAGE_COLLECT_MEMORY        │╰──────── LAST ACTION: wait {} ────────╯
+│      ??n??TRIGGER_SLEEP_MODE         │╭────────── 'meta' (40 x 4) ───────────╮
+│      ??n??PANIC_DUMP ??n             ││         Layout(name='meta')          │
+│                                      ││                                      │
+╰──────────────────────────────────────╯╰──────────────────────────────────────╯
+╭────────────────────────────── System Audit Log ──────────────────────────────╮
+│ [Ep1:St6] run_tests -> FAIL (Cost=1.00)                                      │
+│ [Ep1:St7] summarize -> OK (Cost=0.05)                                        │
+│ [Ep1:St8] run_tests -> FAIL (Cost=1.00)                                      │
+│ [Ep1:St9] wait -> OK (Cost=0.01)                                             │
+│ [Ep1:St10] wait -> OK (Cost=0.01)                                            │
+│ [Ep1:St11] wait -> OK (Cost=0.01)                                            │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯Traceback (most recent call last):
+  File "/app/heterogeneous_agent_swarm/main.py", line 493, in <module>
+    main()
+  File "/app/heterogeneous_agent_swarm/main.py", line 474, in main
+    system.meta.meta_train_agent(agent_name, task_loss)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/heterogeneous_agent_swarm/core/meta_kernel_v2.py", line 245, in meta_train_agent
+    current_lr = agent.optimizer.param_groups['lr']
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+TypeError: list indices must be integers or slices, not str

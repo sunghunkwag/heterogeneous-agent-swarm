@@ -1,89 +1,203 @@
+from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional, Tuple
 import numpy as np
-from ..core.types import EncodedState, Proposal
-from ..core.memory import SemanticMemory
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 @dataclass
 class JEPAConfig:
     device: str = "cpu"
+    learning_rate: float = 1e-3
+    latent_dim: int = 64
+    input_dim: int = 16
+    action_dim: int = 8
+    momentum: float = 0.99
+
+class JEPAEncoder(nn.Module):
+    def __init__(self, input_dim: int, latent_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, latent_dim)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+class JEPAPredictor(nn.Module):
+    def __init__(self, latent_dim: int, action_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim + action_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, latent_dim)
+        )
+
+    def forward(self, latent: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([latent, action], dim=-1)
+        return self.net(x)
 
 class JEPAWorldModelAgent:
+    """
+    JEPA Agent with self-supervised predictive learning and intrinsic motivation.
+    """
+
+    ACTION_TO_IDX = {
+        "run_tests": 0, "write_patch": 1, "summarize": 2,
+        "wait": 3, "emergency_stop": 4, "none": 5
+    }
+
     def __init__(self, name: str, config: JEPAConfig):
         self.name = name
         self.config = config
-        self.long_term_memory = SemanticMemory()
-        self.prev_state_latent = None
-    
-    def propose(self, state: EncodedState, memory: Dict[str, Any]) -> Proposal:
-        # 1. Learning from Success
-        obs = state.raw_obs
-        last_test = obs.get("last_test_ok", False)
-        
-        # If the last step led to success (and we have a previous state), store it
-        if last_test and self.prev_state_latent is not None:
-             last_action_name = memory.get("last_action_name")
-             last_action_params = memory.get("last_action_params")
+        self.device = torch.device(config.device)
 
-             if last_action_name and last_action_params:
-                 # Extract the raw action value from the parameters wrapper
-                 # Orchestrator wraps values in {"value": ...}
-                 raw_value = last_action_params
-                 if isinstance(last_action_params, dict) and "value" in last_action_params:
-                     raw_value = last_action_params["value"]
+        # Networks
+        self.encoder = JEPAEncoder(config.input_dim, config.latent_dim).to(self.device)
+        self.predictor = JEPAPredictor(config.latent_dim, config.action_dim).to(self.device)
+        self.target_encoder = JEPAEncoder(config.input_dim, config.latent_dim).to(self.device)
+        self.target_encoder.load_state_dict(self.encoder.state_dict())
 
-                 # Store (State -> Action)
-                 payload = {
-                     "action_type": last_action_name,
-                     "action_value": raw_value
-                 }
-
-                 self.long_term_memory.add(self.prev_state_latent, payload)
-
-        # Update previous state
-        self.prev_state_latent = state.task_latent
-
-        # 2. System Thought Integration
-        system_thought = np.array(memory.get("system_thought", [0.0]*16))
-        thought_power = np.mean(np.abs(system_thought))
-
-        # 3. Retrieval & Prediction
-        # Query memory for similar states
-        matches = self.long_term_memory.topk(state.task_latent, k=1)
-
-        if matches:
-            best_match = matches[0]
-            similarity = best_match.get("similarity", 0.0)
-
-            # If similarity is high enough, propose the recalled action
-            if similarity > 0.8: # Threshold
-                return Proposal(
-                    action_type=best_match["action_type"],
-                    action_value=best_match["action_value"],
-                    confidence=0.9 * similarity + (0.1 * thought_power),
-                    predicted_value=1.0,
-                    estimated_cost=1.0,
-                    rationale=f"Recalled similar situation (sim={similarity:.2f})",
-                    source_agent=self.name
-                )
-
-        # Fallback / Uncertainty Management
-        # If we haven't tested in a while (uncertainty high), suggest TEST (Heuristic kept as "Intuition")
-        if not last_test and len(obs.get("buffer", [])) >= 3:
-             return Proposal(
-                action_type="run_tests", action_value=None,
-                confidence=0.85, predicted_value=1.5, estimated_cost=5.0,
-                rationale="reduce_uncertainty",
-                source_agent=self.name
-            )
-
-        # If no memory and no heuristic: Wait/Idle (Deterministic)
-        return Proposal(
-            action_type="summarize", # Safe action
-            action_value=None,
-            confidence=0.1, # Low confidence
-            predicted_value=0.0,
-            estimated_cost=1.0,
-            rationale="No memory match. Idle.",
-            source_agent=self.name
+        # Optimizer
+        self.optimizer = torch.optim.Adam(
+            list(self.encoder.parameters()) + list(self.predictor.parameters()),
+            lr=config.learning_rate
         )
+
+        # Action embeddings (learnable)
+        self.action_embedding = nn.Embedding(len(self.ACTION_TO_IDX), config.action_dim).to(self.device)
+
+        self.train_step_count = 0
+
+    def _get_action_tensor(self, action_name: str) -> torch.Tensor:
+        """Convert action name to embedding tensor."""
+        idx = self.ACTION_TO_IDX.get(action_name, 5)  # Default to "none"
+        idx_tensor = torch.tensor([idx], device=self.device)
+        return self.action_embedding(idx_tensor).squeeze(0)
+
+    def propose(self, state: Any, memory: Dict[str, Any]):
+        """
+        Agent interface: propose action based on world model prediction.
+        Returns Proposal with predicted value of each action.
+        """
+        from ..core.types import Proposal
+
+        # Get current state vector
+        if hasattr(state, 'system_thought'):
+            state_vec = np.array(state.system_thought)
+        else:
+            state_vec = np.zeros(self.config.input_dim)
+
+        # Evaluate each possible action using world model
+        action_values = {}
+        for action_name in ["run_tests", "write_patch", "summarize", "wait"]:
+            with torch.no_grad():
+                state_t = torch.FloatTensor(state_vec).to(self.device)
+                if state_t.dim() == 1:
+                    state_t = state_t.unsqueeze(0)
+
+                latent = self.encoder(state_t)
+                action_emb = self._get_action_tensor(action_name).unsqueeze(0)
+                next_latent = self.predictor(latent, action_emb)
+
+                # Value = negative prediction error (lower error = better)
+                # Plus small bonus for novelty (high variance in latent)
+                novelty = torch.var(next_latent).item()
+                action_values[action_name] = novelty * 0.1
+
+        # Pick action with highest novelty (curiosity-driven)
+        best_action = max(action_values, key=action_values.get)
+
+        return Proposal(
+            source_agent=self.name,
+            action_type=best_action,
+            action_value={},
+            confidence=0.5,  # Neutral confidence
+            predicted_value=action_values[best_action],
+            estimated_cost=0.1,
+            rationale=f"JEPA predicts novelty for {best_action}: {action_values[best_action]:.3f}",
+            artifacts={"action_values": action_values}
+        )
+
+    def train_step(self, prev_obs_vector: np.ndarray, action_name: str,
+                   next_obs_vector: np.ndarray, reward: float) -> float:
+        """
+        Single gradient step on JEPA loss.
+
+        Args:
+            prev_obs_vector: Previous observation (e.g., GNN system_thought)
+            action_name: Action taken
+            next_obs_vector: Resulting observation
+            reward: External reward (not used in loss, but logged)
+
+        Returns:
+            prediction_error: Float representing curiosity signal
+        """
+        self.train_step_count += 1
+        self.optimizer.zero_grad()
+
+        # Convert to tensors
+        s_t = torch.FloatTensor(prev_obs_vector).to(self.device)
+        s_t1 = torch.FloatTensor(next_obs_vector).to(self.device)
+
+        if s_t.dim() == 1:
+            s_t = s_t.unsqueeze(0)
+        if s_t1.dim() == 1:
+            s_t1 = s_t1.unsqueeze(0)
+
+        # Forward
+        z_t = self.encoder(s_t)
+        z_t1_target = self.target_encoder(s_t1).detach()
+
+        action_emb = self._get_action_tensor(action_name).unsqueeze(0)
+        z_t1_pred = self.predictor(z_t, action_emb)
+
+        # Prediction loss (MSE)
+        pred_loss = F.mse_loss(z_t1_pred, z_t1_target)
+
+        # Variance loss (prevent collapse)
+        var_loss = torch.mean(F.relu(1.0 - torch.std(z_t, dim=0, unbiased=False))) + \
+                   torch.mean(F.relu(1.0 - torch.std(z_t1_target, dim=0, unbiased=False)))
+
+        # Total loss
+        loss = pred_loss + 0.1 * var_loss
+
+        # Backward
+        loss.backward()
+        self.optimizer.step()
+
+        # Momentum update target encoder
+        with torch.no_grad():
+            m = self.config.momentum
+            for param, target_param in zip(self.encoder.parameters(),
+                                           self.target_encoder.parameters()):
+                target_param.data = m * target_param.data + (1 - m) * param.data
+
+        return pred_loss.item()
+
+    def get_curiosity_reward(self, prev_obs_vector: np.ndarray, action_name: str,
+                             next_obs_vector: np.ndarray) -> float:
+        """
+        Returns prediction error as intrinsic reward (curiosity signal).
+        Higher = more surprising = more interesting to explore.
+        """
+        with torch.no_grad():
+            s_t = torch.FloatTensor(prev_obs_vector).to(self.device)
+            s_t1 = torch.FloatTensor(next_obs_vector).to(self.device)
+
+            if s_t.dim() == 1:
+                s_t = s_t.unsqueeze(0)
+            if s_t1.dim() == 1:
+                s_t1 = s_t1.unsqueeze(0)
+
+            z_t = self.encoder(s_t)
+            z_t1 = self.target_encoder(s_t1)
+            action_emb = self._get_action_tensor(action_name).unsqueeze(0)
+            z_t1_pred = self.predictor(z_t, action_emb)
+
+            error = F.mse_loss(z_t1_pred, z_t1).item()
+
+        return error

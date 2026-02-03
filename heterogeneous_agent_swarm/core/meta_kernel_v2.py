@@ -219,3 +219,96 @@ class MetaKernelV2:
 
         self.audit.emit("meta_commit_noop", {"id": proposal_id, "kind": cp.kind})
         return True
+
+    def meta_train_agent(self, agent_name: str, task_loss: float) -> bool:
+        """
+        Meta-optimization: Adapt agent's learning rate based on performance.
+        This is the "learning to learn" loop.
+
+        Args:
+            agent_name: Name of agent to optimize
+            task_loss: Recent task loss (higher = worse performance)
+
+        Returns:
+            bool: True if adjustment was made
+        """
+        if agent_name not in self.agents_dict:
+            return False
+
+        agent = self.agents_dict[agent_name]
+
+        # Check if agent has optimizer
+        if not hasattr(agent, 'optimizer') or not hasattr(agent.optimizer, 'param_groups'):
+            return False
+
+        # Get current learning rate
+        current_lr = agent.optimizer.param_groups[0]['lr']
+
+        # Meta-learning rule:
+        # - If loss > 0.5 (poor performance), increase LR (explore)
+        # - If loss < 0.2 (good performance), decrease LR (exploit/stabilize)
+        if task_loss > 0.5:
+            new_lr = min(current_lr * 1.2, 0.01)  # Cap at 0.01
+            reason = "high_loss_explore"
+        elif task_loss < 0.2:
+            new_lr = max(current_lr * 0.8, 1e-5)  # Floor at 1e-5
+            reason = "low_loss_exploit"
+        else:
+            # Moderate loss, small decay
+            new_lr = current_lr * 0.95
+            reason = "moderate_decay"
+
+        # Apply new learning rate
+        for param_group in agent.optimizer.param_groups:
+            param_group['lr'] = new_lr
+
+        # Log the meta-update
+        self.audit.emit("meta_train", {
+            "agent": agent_name,
+            "old_lr": current_lr,
+            "new_lr": new_lr,
+            "task_loss": task_loss,
+            "reason": reason
+        })
+
+        return True
+
+    def suggest_architecture_modification(self, agent_name: str) -> Optional[ChangeProposal]:
+        """
+        Neural Architecture Search (NAS) suggestion:
+        If agent consistently underperforms, suggest structural changes.
+
+        Args:
+            agent_name: Agent to evaluate
+
+        Returns:
+            ChangeProposal or None
+        """
+        if agent_name not in self.agents_dict:
+            return None
+
+        # Get performance history
+        perf = self.graph.node_perf.get(agent_name, 0.5)
+
+        # Check if consistently underperforming (threshold < 0.3)
+        if perf < 0.3:
+            # Suggest capacity increase via policy update
+            proposal = self.propose(
+                kind="policy_update",
+                payload={
+                    "target_agent": agent_name,
+                    "modification": "increase_capacity",
+                    "current_perf": perf
+                },
+                rationale=f"Auto-NAS: Agent {agent_name} underperforming (perf={perf:.2f}). Suggesting capacity boost."
+            )
+
+            self.audit.emit("nas_suggestion", {
+                "agent": agent_name,
+                "performance": perf,
+                "proposal_id": proposal.proposal_id
+            })
+
+            return proposal
+
+        return None

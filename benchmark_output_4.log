@@ -1,0 +1,32 @@
+[Sandbox] Setup Level 1 (Arithmetic Progression): Target=[5, 6, 7, 8, 9]
+[Sandbox] Setup Level 1 (Arithmetic Progression): Target=[2, 4, 6, 8, 10]
+[System] Deadlock Detected (>3 Idle Steps). Breaking.
+[Sandbox] Setup Level 2 (Geometric Progression): Target=[3, 6, 12, 24, 48]
+[System] Deadlock Detected (>3 Idle Steps). Breaking.
+[Sandbox] Setup Level 3 (Fibonacci Sequence): Target=[2, 2, 4, 6, 10]
+[System] Deadlock Detected (>3 Idle Steps). Breaking.
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                      ADVANCED AI SYSTEM: BENCHMARK MODE                      ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+╭────── GNN System Consciousness ──────╮╭──────── Swarm Body (Agents) ─────────╮
+│ ╭───────╮╭───────╮╭───────╮╭───────╮ ││                                      │
+│ │ 0.83  ││ 0.48  ││ -0.12 ││ 0.04  │ ││   Agent             Status   Perf    │
+│ ╰───────╯╰───────╯╰───────╯╰───────╯ ││  ─────────────────────────────────   │
+│ ╭───────╮╭───────╮╭───────╮╭───────╮ ││   symbolic_agent    ACTIVE   0.50    │
+╰──────────────────────────────────────╯│   jepa_agent        ACTIVE   0.50    │
+╭───────── SNN Nervous System ─────────╮│   neurosym_agent    ACTIVE   0.50    │
+│           ??PANIC_DUMP ??n           │╰──────── LAST ACTION: wait {} ────────╯
+│                                      │╭────────── 'meta' (40 x 4) ───────────╮
+│                                      ││         Layout(name='meta')          │
+│                                      ││                                      │
+╰──────────────────────────────────────╯╰──────────────────────────────────────╯
+╭────────────────────────────── System Audit Log ──────────────────────────────╮
+│ [BRAIN] Synaptic Update: Reward=-0.5, Weights=0.0818                         │
+│ --- EPISODE 2 (Level 2) START ---                                            │
+│ [Ep2:St0] run_tests -> FAIL (Cost=1.00)                                      │
+│ [Ep2:St1] wait -> OK (Cost=0.01)                                             │
+│ [Ep2:St2] wait -> OK (Cost=0.01)                                             │
+│ [Ep2:St3] wait -> OK (Cost=0.01)                                             │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯System Halted. Benchmark Complete.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, Tuple, List, Optional
 import hashlib
+import numpy as np
 from collections import Counter
 from .graph import AgentGraph
 from .types import Proposal
@@ -9,14 +10,16 @@ class Orchestrator:
     """
     Central decision-making component that selects the best action from agent proposals.
     """
-    def __init__(self, graph: AgentGraph):
+    def __init__(self, graph: AgentGraph, memory: Optional[Any] = None):
         """
         Initialize the Orchestrator.
 
         Args:
             graph: The AgentGraph instance tracking agent states.
+            memory: Optional EpisodicMemory reference.
         """
         self.graph = graph
+        self.memory = memory
         self.veto_threshold = 0.5
         self.selection_strategy = "weighted_perf"
 
@@ -68,6 +71,28 @@ class Orchestrator:
         if not alive_proposals:
             return "summarize", {"reason": "no_alive_agents"}, {"reason": "no_alive_agents"}
 
+        # Memory-based bias initialization
+        memory_bias: Dict[str, float] = {}
+
+        # Query memory for similar past experiences
+        if self.memory and hasattr(state, '__iter__'):
+            try:
+                state_vec = np.array(state) if not isinstance(state, np.ndarray) else state
+                hits = self.memory.retrieve(state_vec, top_k=5)
+
+                for hit in hits:
+                    # Only consider positive experiences (reward > 0)
+                    reward = hit.metadata.get("reward", 0)
+                    if reward > 0.2:  # Threshold for "good" experience
+                        action = hit.metadata.get("action", "")
+                        if action and action in [p.action_type for p in alive_proposals.values()]:
+                            # Boost score proportional to similarity and reward
+                            boost = hit.similarity * reward * 0.3
+                            memory_bias[action] = memory_bias.get(action, 0.0) + boost
+            except Exception:
+                # Graceful fallback if memory query fails
+                pass
+
         winner_proposal: Optional[Proposal] = None
         selection_reason = ""
         
@@ -104,19 +129,25 @@ class Orchestrator:
                 else:
                     return "wait", {}, {"reason": "no_consensus", "stats": dict(tool_counts)}
 
-        else: # "weighted_perf" (Default)
-            # Score = Confidence * Node Performance (if available)
+        else:  # "weighted_perf" (Default)
+            # Score = Confidence * Node Performance + Memory Bias
             scored_proposals = []
             for name, p in alive_proposals.items():
                 perf = self.graph.node_perf.get(name, 0.5)
-                score = p.confidence * perf
-                scored_proposals.append((score, name, p))
+                base_score = p.confidence * perf
+
+                # Add memory bias if this agent's action matches past successes
+                action = p.action_type
+                bias = memory_bias.get(action, 0.0)
+                final_score = base_score + bias
+
+                scored_proposals.append((final_score, name, p, bias))
 
             # Sort desc by score
             if scored_proposals:
                 scored_proposals.sort(key=lambda x: (-x[0], x[1]))
-                score, name, winner_proposal = scored_proposals[0]
-                selection_reason = f"weighted_perf_score_{score:.2f}"
+                score, name, winner_proposal, win_bias = scored_proposals[0]
+                selection_reason = f"weighted_perf_score_{score:.2f}_mem_{win_bias:.2f}"
 
         # Safety check if no winner selected (should match fallback if logic is correct)
         if not winner_proposal:
@@ -133,7 +164,8 @@ class Orchestrator:
             "reason": selection_reason,
             "rationale": winner_proposal.rationale,
             "all_proposals": {n: p.action_type for n, p in alive_proposals.items()},
-            "votes": {n: getattr(p, "action_type", "unknown") for n, p in alive_proposals.items()}
+            "votes": {n: getattr(p, "action_type", "unknown") for n, p in alive_proposals.items()},
+            "memory_bias": memory_bias  # NEW: Show memory influence
         }
 
         return tool_name, tool_args, debug_info

@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple, Optional
 import math
 import time
+import numpy as np
+from collections import deque
 
 
 @dataclass
@@ -18,6 +20,11 @@ class EpisodicRecord:
     score: float
     artifacts: Dict[str, Any]
 
+class MemoryEntry:
+    def __init__(self, vector: np.ndarray, metadata: Dict[str, Any]):
+        self.vector = vector
+        self.metadata = metadata
+        self.similarity = 0.0  # Filled during retrieval
 
 class WorkingMemory:
     """
@@ -41,17 +48,63 @@ class WorkingMemory:
 
 class EpisodicMemory:
     """
-    Long-term storage of past experiences (episodes).
+    Simple episodic memory with cosine similarity retrieval.
     """
-    def __init__(self, max_records: int = 2000):
-        self.max_records = max_records
-        self.records: List[EpisodicRecord] = []
 
-    def add(self, rec: EpisodicRecord) -> None:
-        """Add a new record to memory, maintaining size limit."""
-        self.records.append(rec)
-        if len(self.records) > self.max_records:
-            self.records = self.records[-self.max_records:]
+    def __init__(self, capacity: int = 1000):
+        self.capacity = capacity
+        self.buffer: deque = deque(maxlen=capacity)
+
+    def add(self, vector: np.ndarray, metadata: Dict[str, Any]) -> None:
+        """Add experience to memory."""
+        entry = MemoryEntry(vector.copy(), metadata.copy())
+        self.buffer.append(entry)
+
+    def retrieve(self, query_vector: np.ndarray, top_k: int = 5) -> List[MemoryEntry]:
+        """
+        Retrieve top-k similar experiences.
+        Uses cosine similarity.
+        """
+        if not self.buffer:
+            return []
+
+        query = query_vector.flatten()
+        query_norm = np.linalg.norm(query) + 1e-8
+
+        scored_entries = []
+        for entry in self.buffer:
+            vec = entry.vector.flatten()
+            vec_norm = np.linalg.norm(vec) + 1e-8
+
+            # Cosine similarity
+            similarity = np.dot(query, vec) / (query_norm * vec_norm)
+
+            # Add small bonus for recent entries (recency bias)
+            recency = 0.0
+            if "timestamp" in entry.metadata:
+                age = time.time() - entry.metadata["timestamp"]
+                recency = 0.1 * np.exp(-age / 100)  # Decay over 100 seconds
+
+            entry.similarity = similarity + recency
+            scored_entries.append(entry)
+
+        # Sort by similarity (descending)
+        scored_entries.sort(key=lambda x: x.similarity, reverse=True)
+
+        return scored_entries[:top_k]
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get memory statistics."""
+        if not self.buffer:
+            return {"count": 0}
+
+        rewards = [e.metadata.get("reward", 0) for e in self.buffer]
+        return {
+            "count": len(self.buffer),
+            "avg_reward": np.mean(rewards),
+            "max_reward": max(rewards) if rewards else 0,
+            "min_reward": min(rewards) if rewards else 0
+        }
 
 
 class SemanticMemory:

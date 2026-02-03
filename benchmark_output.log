@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "/app/heterogeneous_agent_swarm/main.py", line 30, in <module>
+    from heterogeneous_agent_swarm.core.meta_kernel_v2 import MetaKernelV2
+  File "/app/heterogeneous_agent_swarm/core/meta_kernel_v2.py", line 13, in <module>
+    from heterogeneous_agent_swarm.agents.jepa_world_model import JEPAWorldModelAgent, JEPAConfig
+  File "/app/heterogeneous_agent_swarm/agents/jepa_world_model.py", line 162
+    var_loss = torch.mean(F.relu(1.0 - torch.std(z_t, dim=0))) + \
+                                                                  ^
+SyntaxError: unexpected character after line continuation character
