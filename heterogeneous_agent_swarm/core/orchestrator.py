@@ -41,7 +41,7 @@ class Orchestrator:
                 self.selection_strategy = selection_strategy
 
     def choose(self, proposals: Dict[str, Proposal], state: Any, veto: Optional[Dict[str, Any]] = None,
-               force_strategy: Optional[str] = None) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+               force_strategy: Optional[str] = None, system_uncertainty: float = 0.5) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
         """
         Select the winning action based on the current policy.
 
@@ -50,6 +50,7 @@ class Orchestrator:
             state: Current system state (unused in selection logic currently).
             veto: Optional veto signal from verification agents.
             force_strategy: Override selection strategy for this step (e.g. "random" for deadlock recovery).
+            system_uncertainty: GNN variance metric (C-Stage).
 
         Returns:
             Tuple containing:
@@ -59,7 +60,7 @@ class Orchestrator:
         """
         self.step_counter += 1
 
-        # 1. Veto Check
+        # 1. Veto Check (Traditional)
         if veto:
             veto_score = veto.get("veto_score")
             # If veto_score is present, check against threshold
@@ -70,12 +71,33 @@ class Orchestrator:
             elif veto.get("deny", False):
                  return "wait", {}, {"reason": "vetoed_binary"}
 
-        # Filter for alive agents
+        # 1.5 C-Stage: Panic Mode (High Uncertainty Veto)
+        if system_uncertainty > 0.3:
+            # High uncertainty -> Force NeuroSymbolic or Symbolic
+            preferred = ["neurosym_agent", "symbolic_agent"]
+            candidates = {n: p for n, p in proposals.items() if n in preferred and self.graph.node_alive.get(n, False)}
+            if candidates:
+                # Force selection of one of these
+                winner_name = max(candidates, key=lambda n: candidates[n].confidence)
+                winner_proposal = candidates[winner_name]
+                return winner_proposal.action_type, {"value": winner_proposal.action_value}, {
+                    "reason": "panic_mode_gating",
+                    "uncertainty": system_uncertainty,
+                    "winner": winner_name
+                }
+            # If preferred agents are not available, fall through but log warning
+            # (or could force wait, but maybe better to let others try?)
+
+        # Filter for alive AND non-suppressed agents
         alive_proposals = {n: p for n, p in proposals.items()
-                           if self.graph.node_alive.get(n, False)}
+                           if self.graph.node_alive.get(n, False) and not self.graph.node_suppressed.get(n, False)}
+
+        # C-Stage: Convergence Mode (Low Uncertainty) -> Block Diffusion
+        if system_uncertainty < 0.05:
+            alive_proposals = {n: p for n, p in alive_proposals.items() if n != "diffusion_agent"}
 
         if not alive_proposals:
-            return "summarize", {"reason": "no_alive_agents"}, {"reason": "no_alive_agents"}
+            return "summarize", {"reason": "no_available_agents"}, {"reason": "no_available_agents"}
 
         # Memory-based bias initialization
         memory_bias: Dict[str, float] = {}

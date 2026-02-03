@@ -52,6 +52,7 @@ class MetaKernelV2:
         self.device = device
         self.min_quorum = min_quorum
         self.proposals: Dict[str, ChangeProposal] = {}
+        self.consecutive_failures: Dict[str, int] = {}  # Track consecutive poor performance
 
         self.agent_factory = {
             "symbolic": (SymbolicSearchAgent, SymbolicConfig),
@@ -257,63 +258,48 @@ class MetaKernelV2:
         self.audit.emit("meta_commit_noop", {"id": proposal_id, "kind": cp.kind})
         return True
 
-    def meta_train_agent(self, agent_name: str, task_loss: float) -> Optional[Dict[str, Any]]:
+    def suppress_agent(self, agent_name: str, task_loss: float) -> Optional[Dict[str, Any]]:
         """
-        Meta-optimization: Adapt agent's learning rate based on performance.
-        This is the "learning to learn" loop.
+        C-Stage Structural Rigor: Enforce performance constraints.
+        If an agent consistently fails (task_loss > 0.8), suppress it.
 
         Args:
-            agent_name: Name of agent to optimize
-            task_loss: Recent task loss (higher = worse performance)
+            agent_name: Name of agent to evaluate.
+            task_loss: Recent task loss (higher = worse performance).
 
         Returns:
-            Dict with impact data or None if no update.
+            Dict with suppression data or None if no action.
         """
         if agent_name not in self.agents_dict:
             return None
 
-        agent = self.agents_dict[agent_name]
-
-        # Check if agent has optimizer
-        if not hasattr(agent, 'optimizer') or not hasattr(agent.optimizer, 'param_groups'):
-            return None
-
-        # Get current learning rate - fix for previous bug
-        current_lr = agent.optimizer.param_groups[0]['lr']
-
-        # Meta-learning rule:
-        # - If loss > 0.5 (poor performance), increase LR (explore)
-        # - If loss < 0.2 (good performance), decrease LR (exploit/stabilize)
-        if task_loss > 0.5:
-            new_lr = min(current_lr * 1.2, 0.01)  # Cap at 0.01
-            reason = "high_loss_explore"
-        elif task_loss < 0.2:
-            new_lr = max(current_lr * 0.8, 1e-5)  # Floor at 1e-5
-            reason = "low_loss_exploit"
+        # Check failure threshold
+        if task_loss > 0.8:
+            self.consecutive_failures[agent_name] = self.consecutive_failures.get(agent_name, 0) + 1
         else:
-            # Moderate loss, small decay
-            new_lr = current_lr * 0.95
-            reason = "moderate_decay"
+            self.consecutive_failures[agent_name] = 0
 
-        # Apply new learning rate
-        for param_group in agent.optimizer.param_groups:
-            param_group['lr'] = new_lr
+        failures = self.consecutive_failures[agent_name]
 
-        # Track impact
-        impact_data = {
-            "agent": agent_name,
-            "old_lr": current_lr,
-            "new_lr": new_lr,
-            "task_loss": task_loss,
-            "reason": reason,
-            "timestamp": time.time(),
-            "learning_rate_change_ratio": new_lr / (current_lr + 1e-8)
-        }
+        # Trigger suppression if 3 consecutive failures
+        if failures >= 3:
+            # Check if already suppressed
+            if not self.graph.node_suppressed.get(agent_name, False):
+                self.graph.suppress_node(agent_name)
 
-        # Log the meta-update
-        self.audit.emit("meta_train_impact", impact_data)
+                impact_data = {
+                    "agent": agent_name,
+                    "action": "suppressed",
+                    "reason": "consecutive_failures",
+                    "failures": failures,
+                    "task_loss": task_loss,
+                    "timestamp": time.time()
+                }
 
-        return impact_data
+                self.audit.emit("meta_suppression", impact_data)
+                return impact_data
+
+        return None
 
     def suggest_architecture_modification(self, agent_name: str) -> Optional[ChangeProposal]:
         """

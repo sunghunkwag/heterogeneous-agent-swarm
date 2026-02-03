@@ -110,3 +110,13 @@ class LightweightGNN:
             The mean vector of all node states.
         """
         return np.mean(self.H, axis=0)
+
+    def get_system_uncertainty(self) -> float:
+        """
+        C-Stage: Calculate system uncertainty (Disagreement).
+        Metric: Mean variance across the agent population's hidden states.
+
+        Returns:
+            Scalar float representing uncertainty.
+        """
+        return float(np.mean(np.var(self.H, axis=0)))

@@ -8,6 +8,7 @@ class AgentGraph:
     def __init__(self):
         """Initialize an empty AgentGraph."""
         self.node_alive: Dict[str, bool] = {}
+        self.node_suppressed: Dict[str, bool] = {}  # C-Stage: Hard Silence
         self.node_perf: Dict[str, float] = {}
         self.node_cost: Dict[str, float] = {}
         # Simple adjacency if needed, but for now just presence
@@ -22,6 +23,7 @@ class AgentGraph:
         """
         if name not in self.node_alive:
             self.node_alive[name] = True
+            self.node_suppressed[name] = False
             self.node_perf[name] = 0.5
             self.node_cost[name] = 0.05
             self.adjacency[name] = []
@@ -43,3 +45,18 @@ class AgentGraph:
             name: The name of the agent to remove.
         """
         self.node_alive[name] = False
+
+    def suppress_node(self, name: str) -> None:
+        """
+        Hard silence a node (C-Stage Rigor).
+        Proposals from this node will be ignored.
+        """
+        if name in self.node_alive:
+            self.node_suppressed[name] = True
+
+    def unsuppress_node(self, name: str) -> None:
+        """
+        Lift the hard silence from a node.
+        """
+        if name in self.node_alive:
+            self.node_suppressed[name] = False
