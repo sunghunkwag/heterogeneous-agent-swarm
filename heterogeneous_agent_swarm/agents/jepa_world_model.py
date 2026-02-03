@@ -16,28 +16,36 @@ class JEPAConfig:
     input_dim: int = 16
     action_dim: int = 8
     momentum: float = 0.99
-    hidden_dim: int = 128  # Added for variable capacity
+    hidden_dim: int = 128
+    num_layers: int = 2 # Added for Structural RSI
+    ucb_beta_base: float = 0.1
 
 class JEPAEncoder(nn.Module):
-    def __init__(self, input_dim: int, latent_dim: int, hidden_dim: int = 128):
+    def __init__(self, input_dim: int, latent_dim: int, hidden_dim: int = 128, num_layers: int = 2):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, latent_dim)
-        )
+        layers = []
+        curr_dim = input_dim
+        for _ in range(num_layers - 1):
+            layers.append(nn.Linear(curr_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            curr_dim = hidden_dim
+        layers.append(nn.Linear(curr_dim, latent_dim))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 class JEPAPredictor(nn.Module):
-    def __init__(self, latent_dim: int, action_dim: int, hidden_dim: int = 128):
+    def __init__(self, latent_dim: int, action_dim: int, hidden_dim: int = 128, num_layers: int = 2):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(latent_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, latent_dim)
-        )
+        layers = []
+        curr_dim = latent_dim + action_dim
+        for _ in range(num_layers - 1):
+            layers.append(nn.Linear(curr_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            curr_dim = hidden_dim
+        layers.append(nn.Linear(curr_dim, latent_dim))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, latent: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         x = torch.cat([latent, action], dim=-1)
@@ -59,9 +67,9 @@ class JEPAWorldModelAgent:
         self.device = torch.device(config.device)
 
         # Networks
-        self.encoder = JEPAEncoder(config.input_dim, config.latent_dim, config.hidden_dim).to(self.device)
-        self.predictor = JEPAPredictor(config.latent_dim, config.action_dim, config.hidden_dim).to(self.device)
-        self.target_encoder = JEPAEncoder(config.input_dim, config.latent_dim, config.hidden_dim).to(self.device)
+        self.encoder = JEPAEncoder(config.input_dim, config.latent_dim, config.hidden_dim, config.num_layers).to(self.device)
+        self.predictor = JEPAPredictor(config.latent_dim, config.action_dim, config.hidden_dim, config.num_layers).to(self.device)
+        self.target_encoder = JEPAEncoder(config.input_dim, config.latent_dim, config.hidden_dim, config.num_layers).to(self.device)
         self.target_encoder.load_state_dict(self.encoder.state_dict())
 
         # Optimizer
@@ -81,6 +89,17 @@ class JEPAWorldModelAgent:
         self.base_lr = config.learning_rate
         self.base_momentum = config.momentum
         self.current_momentum = config.momentum
+
+    def update_hyperparameters(self, lr: float = None, beta_base: float = None):
+        """Dynamic update from MetaMetaOptimizer."""
+        if lr is not None:
+            self.base_lr = lr
+            self.config.learning_rate = lr # Update config for persistence
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
+        
+        if beta_base is not None:
+            self.config.ucb_beta_base = beta_base
 
     def _count_params(self) -> int:
         return sum(p.numel() for p in self.encoder.parameters() if p.requires_grad) + \
@@ -247,27 +266,41 @@ class JEPAWorldModelAgent:
                 uncertainty = torch.var(next_latent_pred).item()
                 action_errors[action_name] = uncertainty
 
-        # Selection Logic
-        # Thresholds
-        THRESH_LOW = 0.05
-        THRESH_HIGH = 0.5
+        # Selection Logic: Dynamic Upper Confidence Bound (UCB)
+        # Score = Q(action) + beta * Uncertainty(action)
+        
+        # 1. Get Beta from System State (Error Rate)
+        # Error Rate is in memory (passed from SNN/Evaluator)
+        # If not present, default to high exploration (assume we are failing if we don't know)
+        error_rate = float(memory.get("error_rate", 1.0))
+        
+        # Beta Mapping:
+        # Error 1.0 (Fail) -> Beta = base + (base * 10 * error)
+        # Error 0.0 (Success) -> Beta = base
+        # This scales exploration relative to the Meta-Meta base setting.
+        base = self.config.ucb_beta_base
+        beta = base + (base * 19.0 * error_rate) # Scale up to 20x base at max error
+        # e.g. base=0.1 -> beta range [0.1, 2.0]
 
         scores = {}
         for act, uncert in action_errors.items():
-            # Base value
-            score = avg_external_reward
-
-            if uncert < THRESH_LOW:
-                # Boredom penalty (Mastered)
-                score -= 0.2
-            elif uncert > THRESH_HIGH:
-                # Risk penalty (Chaos)
-                score -= 0.5
-                # But also exploration potential...
-                score += 0.3 # Net -0.2
-            else:
-                # Sweet spot: Trustworthy but not boring
-                score += 0.5 # High confidence bonus
+            # Safety: Never explore emergency_stop via curiosity
+            if act == "emergency_stop":
+                scores[act] = -100.0
+                continue
+                
+            # Base Q-Value (predicted reward)
+            # In this stub, we use avg external reward, but ideally this comes from the predictor
+            # For now, we assume 0.0 base value if unknown, or use memory
+            q_val = avg_external_reward
+            
+            # UCB Score
+            score = q_val + beta * uncert
+            
+            # Action specific bias (Optional: Break ties for 'wait')
+            # Penalize 'wait' slightly to encourage action when uncertainty is equal
+            if act == "wait":
+                 score -= 0.05
 
             scores[act] = score
 
@@ -282,8 +315,8 @@ class JEPAWorldModelAgent:
             confidence=0.5,
             predicted_value=best_score,
             estimated_cost=0.1,
-            rationale=f"JEPA Selection: Uncertainty={best_uncertainty:.3f}, Score={best_score:.3f}",
-            artifacts={"action_scores": scores, "uncertainty": action_errors}
+            rationale=f"JEPA UCB: Beta={beta:.2f}, Uncert={best_uncertainty:.3f}, Score={best_score:.3f}",
+            artifacts={"action_scores": scores, "uncertainty": action_errors, "beta": beta}
         )
 
     def train_step(self, prev_system_thought: np.ndarray, action_name: str,

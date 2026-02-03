@@ -173,6 +173,10 @@ class MetaKernelV2:
 
         return True
 
+    def update_min_quorum(self, value: int):
+        self.min_quorum = value
+        self.audit.emit("meta_quorum_update", {"min_quorum": value})
+
     def commit(self, proposal_id: str) -> bool:
         """
         Execute the proposal if valid and approved.

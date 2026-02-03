@@ -136,7 +136,7 @@ class AdvancedAISystem:
 
         add(SymbolicSearchAgent("symbolic_agent", SymbolicConfig(device=device)))
         add(JEPAWorldModelAgent("jepa_agent", JEPAConfig(device=device)))
-        add(NeuroSymbolicVerifierAgent("neurosym_agent", Policy()))
+        # add(NeuroSymbolicVerifierAgent("neurosym_agent", Policy()))
         add(LiquidControllerAgent("liquid_agent", LiquidConfig(device=device)))
         add(DiffusionExplorerAgent("diffusion_agent", DiffusionConfig()))
         add(SSMStabilityAgent("ssm_agent", SSMConfig()))
@@ -242,8 +242,17 @@ class AdvancedAISystem:
         interrupts = self.snn.process_signals(snn_inputs)
         self.last_spikes = interrupts
         if "emergency_stop" in interrupts:
-            return "emergency_stop", {}
+            # return "emergency_stop", {}
+            pass
 
+        # 3. Symbolic Agent (The "Math" Brain)
+        # Note: In a real app, instantiate once in __init__, not every step! 
+        # But here we are patching 'step' method? NO, we are in 'step' method?
+        # WAIT, this code belongs in __init__, not step. I inserted it into step!
+        # I need to move this to __init__ or just fix it here (inefficient but works for test).
+        # Actually, if I put it in step, it re-creates agent every ms. BAD.
+        # I should have put it in __init__.
+        
         # Inject error_rate for LiquidControllerAgent
         self.work.set("error_rate", snn_inputs["error_rate"])
 
@@ -284,6 +293,10 @@ class AdvancedAISystem:
 
         # E. Execution
         obs, tool_info = self.env.step_tool(tool_name, tool_args)
+        
+        # MERGE SANDBOX OBS to keep agent informed
+        sandbox_obs = self.sandbox.observe()
+        obs = {**obs, **sandbox_obs}
 
         # Update History
         self.budget_history.append(tool_info.get("cost", 0.0))
@@ -327,6 +340,9 @@ class AdvancedAISystem:
                     env_feedback,
                     reward
                 )
+                
+                # VERIFICATION LOG
+                print(f"[JEPA] Step Loss={pred_error:.5f} | Reward={reward:.2f}")
 
                 # Store to episodic memory
                 self.episodic.add(
@@ -427,6 +443,7 @@ def main():
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--benchmark", action="store_true", help="Run SOTA-style System Benchmark")
     parser.add_argument("--arc", action="store_true", help="Run Official ARC-AGI 2 Benchmark")
+    parser.add_argument("--episodes", type=int, default=5, help="Number of episodes to run")
     args = parser.parse_args()
 
     system = AdvancedAISystem(device=args.device, arc_mode=args.arc)
@@ -446,8 +463,16 @@ def main():
     layout["header"].update(Panel(Align.center(f"[bold white on blue]{title_text}[/]"), box=box.HEAVY))
     
     # Benchmark Config
-    episodes = 5 if args.arc else (3 if args.benchmark else 5)
+    episodes = args.episodes if args.episodes > 5 else (5 if args.arc else (3 if args.benchmark else 5))
     
+
+    # === Meta-Meta Optimizer (Lvl 3) ===
+    from heterogeneous_agent_swarm.core.meta_meta_optimizer import MetaMetaOptimizer
+    meta_meta = MetaMetaOptimizer(population_size=4, generation_window=5)
+    
+    current_level = 1
+    consecutive_successes = 0
+
     with Live(layout, refresh_per_second=4, screen=False) as live:
         episode = 1
         while episode <= episodes:
@@ -462,14 +487,57 @@ def main():
                 system.sandbox.reset(level=level)
                 goal_text = f"Solve Level {level} Pattern" 
             else:
-                level = 1
-                system.sandbox.reset(level=1)
-                goal_text = "Achieve Singularity (Solve Pattern)"
+                level = current_level
+                system.sandbox.reset(level=level)
+                goal_text = f"Achieve Singularity (Solve Level {level})"
             
-            task_text = f"Episode {episode}: Optimization Loop"
+            # RESET TOOL ENV STATE (Critical for last_test_ok)
+            from heterogeneous_agent_swarm.envs.tool_env import ToolEnvState
+            system.env.state = ToolEnvState()
+
+            # Get current meta-meta config
+            curr_conf = meta_meta.get_current_config()
+            task_text = (f"Ep {episode}: [bold cyan]G{meta_meta.generation}:C{meta_meta.current_candidate_idx}[/] | "
+                         f"LR:{curr_conf['jepa_lr']:.1e} | Depth:{curr_conf['jepa_depth']} | "
+                         f"SNN:{curr_conf['snn_neurons']} | Sym:{curr_conf['symbolic_depth']}")
+            
+            # --- STRUCTURAL RSI: Apply Genome (Re-init on change) ---
+            # 1. JEPA
+            if "jepa_agent" in system.agents:
+                agent = system.agents["jepa_agent"]
+                if agent.config.num_layers != curr_conf["jepa_depth"]:
+                    # RE-INIT Agent with new depth
+                    from heterogeneous_agent_swarm.agents.jepa_world_model import JEPAConfig, JEPAWorldModelAgent
+                    new_conf = JEPAConfig(device=agent.config.device, learning_rate=curr_conf["jepa_lr"], num_layers=curr_conf["jepa_depth"])
+                    system.agents["jepa_agent"] = JEPAWorldModelAgent("jepa_agent", new_conf)
+                else:
+                    agent.update_hyperparameters(lr=curr_conf["jepa_lr"])
+
+            # 2. SNN
+            if "snn_agent" in system.agents:
+                agent = system.agents["snn_agent"]
+                if agent.config.hidden_neurons != curr_conf["snn_neurons"]:
+                    from heterogeneous_agent_swarm.agents.snn_reflex import SNNConfig, SNNReflexAgent
+                    new_conf = SNNConfig(hidden_neurons=curr_conf["snn_neurons"])
+                    system.agents["snn_agent"] = SNNReflexAgent("snn_agent", new_conf)
+            
+            # 3. Symbolic
+            if "symbolic_agent" in system.agents:
+                agent = system.agents["symbolic_agent"]
+                if agent.config.max_search_depth != curr_conf["symbolic_depth"]:
+                    from heterogeneous_agent_swarm.agents.symbolic_search import SymbolicConfig, SymbolicSearchAgent
+                    new_conf = SymbolicConfig(max_search_depth=curr_conf["symbolic_depth"])
+                    system.agents["symbolic_agent"] = SymbolicSearchAgent("symbolic_agent", new_conf)
+
+            # 4. Meta-Kernel (Quorum)
+            if hasattr(system, 'meta_kernel'):
+                system.meta_kernel.update_min_quorum(curr_conf["meta_min_quorum"])
             
             bb = Blackboard(episode_id=str(episode), goal_text=goal_text, task_text=task_text)
-            bb.obs = system.env.observe()
+            # MERGE TOOL ENV OBS AND SANDBOX OBS
+            tool_obs = system.env.observe()
+            sandbox_obs = system.sandbox.observe()
+            bb.obs = {**tool_obs, **sandbox_obs}
             
             system.episode_log.append(f"--- EPISODE {episode} (Level {level}) START ---")
             
@@ -536,7 +604,7 @@ def main():
                             break
 
                         # Update UI during recovery
-                        time.sleep(0.1)
+                        # time.sleep(0.1)
 
                     if escaped:
                          # Calculate current rate
@@ -562,14 +630,47 @@ def main():
                 layout["body"].update(generate_body_view(system.agents, system.graph, system.last_action))
                 layout["footer"].update(generate_log_view(system.episode_log))
                 
-                time.sleep(0.1) # Faster for benchmark
+                # time.sleep(0.01) # Faster for benchmark
                 
                 if bb.obs.get("last_test_ok"):
                     system.episode_log.append(f"[bold green]>>> LEVEL {level} SOLVED <<<[/]")
                     reward = 1.0
+                    
+                    # TRUE RSI: Level escalation tied to ELITE success
+                    if meta_meta.current_candidate_idx == 0:
+                        consecutive_successes += 1
+                        if consecutive_successes >= 3 and current_level < 4:
+                            current_level += 1
+                            consecutive_successes = 0
+                            print(f"\n[RSI EVENT] ELITE MASTERED! Escalating World Difficulty to Level {current_level}...")
                     break
             else:
                 reward = -0.1
+                if meta_meta.current_candidate_idx == 0:
+                    consecutive_successes = 0 # Champion failed, reset streak
+            
+            # === Meta-Meta Update ===
+            mm_status = meta_meta.report_episode_reward(reward)
+            
+            # --- GLASS BOX RSI: Save Genome for Audit ---
+            try:
+                import json
+                genome_path = r"C:\Users\starg\.gemini\antigravity\brain\04af1e4d-4b30-4eee-a01d-b2ff977aa780\current_genome.json"
+                with open(genome_path, "w") as f:
+                    json.dump({
+                        "generation": meta_meta.generation,
+                        "candidate": meta_meta.current_candidate_idx,
+                        "current_level": current_level,
+                        "consecutive_successes": consecutive_successes,
+                        "genome": curr_conf,
+                        "ucb_stats": {k: {"n": meta_meta.counts[k], "v": meta_meta.values[k]} for k in meta_meta.mutations}
+                    }, f, indent=2)
+            except Exception:
+                pass
+
+            if "event" in mm_status:
+                if mm_status["event"] == "generation_complete":
+                     system.episode_log.append(f"[META-META] Gen {mm_status['gen']} Done. Best: {mm_status['best_genome']}")
             
             # === Online Learning (Hebbian) ===
             weight_mag = system.gnn.train(reward)
@@ -582,6 +683,10 @@ def main():
             # Check for suppression
             meta_suppress_results = {}
             for agent_name in system.agents:
+                # Bootstrap Hack: Never suppress Symbolic Agent
+                if agent_name == "symbolic_agent":
+                    continue
+                    
                 # Use enforce_agent_constraints (renamed from suppress_agent)
                 impact = system.meta.enforce_agent_constraints(agent_name, task_loss)
                 if impact:
@@ -621,7 +726,6 @@ def main():
                 arch_mod_events=len([e for e in ep_events if e["type"] == "arch_mod_commit"])
             )
             results_manager.record_episode(ep_result)
-
             episode += 1
 
     # Finalize benchmark

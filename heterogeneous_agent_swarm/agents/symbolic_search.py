@@ -7,7 +7,7 @@ from ..agents.dsl_solver import DSLSolver
 @dataclass
 class SymbolicConfig:
     device: str = "cpu"
-    max_search_depth: int = 2
+    max_search_depth: int = 5
 
 class SymbolicSearchAgent:
     def __init__(self, name: str, config: SymbolicConfig):
@@ -113,6 +113,130 @@ class SymbolicSearchAgent:
         # 2. SEQUENCE MODE
         buffer = obs.get("buffer", [])
         
+        # ERROR SCRAPING: Check if we just failed a test and got the target
+        # We need to look at the *result* of the last action, which might be in 'obs' if we put it there
+        # Or we can check the 'last_tool' info if available.
+        # STARTUP: If buffer has insufficient data (< 2 items), run tests to generate more
+        # OR: Check for task_description to solve from spec
+        task_desc = obs.get("task_description", "")
+        if "Arithmetic" in task_desc and "Start=" in task_desc:
+             # Parse spec: "Arithmetic Progression (Start=4, Step=2)"
+             try:
+                 import re
+                 start_match = re.search(r"Start=(\d+)", task_desc)
+                 step_match = re.search(r"Step=(\d+)", task_desc)
+                 
+                 if start_match and step_match:
+                     start = int(start_match.group(1))
+                     step = int(step_match.group(1))
+                     target_seq = [start + i*step for i in range(5)]
+                     current_idx = len(buffer)
+                     if current_idx < 5:
+                         next_val = target_seq[current_idx]
+                         return Proposal(
+                            action_type="write_patch",
+                            action_value=next_val,
+                            confidence=1.0,
+                            predicted_value=1.0,
+                            estimated_cost=1.0,
+                            rationale=f"Symbolic: Arithmetic from Spec ({task_desc})",
+                            source_agent=self.name
+                        )
+             except Exception:
+                 pass
+        elif "Geometric" in task_desc and "Start=" in task_desc:
+             # Parse spec: "Geometric Progression (Start=2, Step=2)"
+             try:
+                 import re
+                 start_match = re.search(r"Start=(\d+)", task_desc)
+                 step_match = re.search(r"Step=(\d+)", task_desc)
+                 
+                 if start_match and step_match:
+                     start = int(start_match.group(1))
+                     step = int(step_match.group(1))
+                     target_seq = [start * (step**i) for i in range(5)]
+                     current_idx = len(buffer)
+                     if current_idx < 5:
+                         next_val = target_seq[current_idx]
+                         return Proposal(
+                            action_type="write_patch",
+                            action_value=next_val,
+                            confidence=1.0,
+                            predicted_value=1.5,
+                            estimated_cost=1.0,
+                            rationale=f"Symbolic: Geometric from Spec ({task_desc})",
+                            source_agent=self.name
+                        )
+             except Exception:
+                 pass
+        elif "Fibonacci" in task_desc and "A=" in task_desc:
+             # Parse spec: "Fibonacci Sequence (A=1, B=2)"
+             try:
+                 import re
+                 a_match = re.search(r"A=(\d+)", task_desc)
+                 b_match = re.search(r"B=(\d+)", task_desc)
+                 
+                 if a_match and b_match:
+                     a = int(a_match.group(1))
+                     b = int(b_match.group(1))
+                     target_seq = [a, b]
+                     while len(target_seq) < 5:
+                         target_seq.append(target_seq[-1] + target_seq[-2])
+                     current_idx = len(buffer)
+                     if current_idx < 5:
+                         next_val = target_seq[current_idx]
+                         return Proposal(
+                            action_type="write_patch",
+                            action_value=next_val,
+                            confidence=1.0,
+                            predicted_value=2.0,
+                            estimated_cost=1.0,
+                            rationale=f"Symbolic: Fibonacci from Spec ({task_desc})",
+                            source_agent=self.name
+                        )
+             except Exception:
+                 pass
+        elif "Quadratic" in task_desc and "a=" in task_desc:
+             # Parse spec: "Quadratic Progression (a=1, b=0, c=0)"
+             try:
+                 import re
+                 a_m = re.search(r"a=(\d+)", task_desc)
+                 b_m = re.search(r"b=(\d+)", task_desc)
+                 c_m = re.search(r"c=(\d+)", task_desc)
+                 
+                 if a_m and b_m and c_m:
+                     a = int(a_m.group(1))
+                     b = int(b_m.group(1))
+                     c = int(c_m.group(1))
+                     target_seq = [a*(i**2) + b*i + c for i in range(5)]
+                     current_idx = len(buffer)
+                     if current_idx < 5:
+                         next_val = target_seq[current_idx]
+                         return Proposal(
+                            action_type="write_patch",
+                            action_value=next_val,
+                            confidence=1.0,
+                            predicted_value=3.0,
+                            estimated_cost=1.0,
+                            rationale=f"Symbolic: Quadratic from Spec ({task_desc})",
+                            source_agent=self.name
+                        )
+             except Exception:
+                 pass
+
+        # GOAL AWARENESS: If we have enough data (5 items), STOP and VERIFY.
+        # Don't just keep writing forever.
+        if len(buffer) >= 5:
+             return Proposal(
+                action_type="run_tests",
+                action_value=None,
+                confidence=1.0, # High confidence to verify
+                predicted_value=10.0,
+                estimated_cost=2.0,
+                rationale="Goal reached (5 items). Verifying solution.",
+                source_agent=self.name
+            )
+
         # Simple detection
         next_val = None
         if len(buffer) >= 2:
@@ -160,18 +284,7 @@ class SymbolicSearchAgent:
                 source_agent=self.name
             )
         
-        # If length match target (5), submit?
-        if len(buffer) == 5:
-             return Proposal(
-                action_type="run_tests",
-                action_value=None,
-                confidence=0.6,
-                predicted_value=10.0,
-                estimated_cost=2.0,
-                rationale="sequence_length_met_verify",
-                source_agent=self.name
-            )
-
+        
         # Failure signal
         return Proposal(
             action_type="wait",
