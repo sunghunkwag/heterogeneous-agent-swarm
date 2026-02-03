@@ -163,8 +163,39 @@ class AdvancedAISystem:
         return entropy
 
     def _get_system_state_vector(self) -> np.ndarray:
-        """Get current system state as vector for JEPA."""
+        """Get current system state as vector for JEPA input (System Thought)."""
         return self.system_thought.copy()
+
+    def _get_env_feedback_vector(self, obs: Dict, cost: float) -> np.ndarray:
+        """
+        Construct 16-dim environment feedback vector for JEPA target.
+        [last_test_ok, failures, diff_count, grid_entropy/buffer, cost, 0...]
+        """
+        vec = np.zeros(16, dtype=np.float32)
+
+        # 0: last_test_ok
+        vec[0] = 1.0 if obs.get("last_test_ok") else 0.0
+
+        # 1: failures (normalized, cap at 10)
+        # Assuming failures is tracked in obs or we use a proxy.
+        # Using obs.get("error") as boolean for now if failures count isn't explicit in tool output
+        vec[1] = 1.0 if obs.get("error") else 0.0
+
+        # 2: diff_count / distance (normalized)
+        # Sandbox might return 'diff_count' in info
+        info = self.work.get("last_tool", {})
+        diff = info.get("output", {}).get("diff_count", 0) if isinstance(info.get("output"), dict) else 0
+        vec[2] = min(diff / 100.0, 1.0)
+
+        # 3: Entropy or Buffer Length
+        # Proxy: length of output or specific env metric
+        # specific logic for ARC vs Code not fully exposed here, using generic proxy
+        vec[3] = 0.5 # Placeholder or valid metric if available
+
+        # 4: Cost
+        vec[4] = min(cost, 1.0)
+
+        return vec
 
     def _calculate_combined_reward(self, obs: Dict, prev_state: np.ndarray,
                                    action_name: str, current_state: np.ndarray) -> float:
@@ -241,8 +272,11 @@ class AdvancedAISystem:
         if p_neuro and p_neuro.artifacts.get("verdict") == "deny":
             veto = p_neuro.artifacts # Pass full artifacts for veto_score check
         
+        # C-Stage: Get System Uncertainty
+        sys_uncertainty = self.gnn.get_system_uncertainty()
+
         # Pass force_strategy to orchestrator
-        tool_name, tool_args, dbg = self.orch.choose(proposals, state, veto, force_strategy=force_strategy)
+        tool_name, tool_args, dbg = self.orch.choose(proposals, state, veto, force_strategy=force_strategy, system_uncertainty=sys_uncertainty)
         
         # Mapping Removed (Agents now speak Vocabulary)
 
@@ -265,22 +299,30 @@ class AdvancedAISystem:
         self.last_action = (tool_name, tool_args)
         
         # === JEPA Training & Memory Storage ===
-        current_state = self._get_system_state_vector()
+        current_system_thought = self._get_system_state_vector()
+
+        # C-Stage: Construct Environment Feedback Vector
+        current_cost = tool_info.get("cost", 0.0)
+        env_feedback = self._get_env_feedback_vector(obs, current_cost)
 
         if self.prev_system_state is not None and self.prev_action_name is not None:
             # Train JEPA on transition
             jepa_agent = self.agents.get("jepa_agent")
             if jepa_agent and hasattr(jepa_agent, 'train_step'):
                 # Calculate reward for this transition
+                # Note: Reward calculation still uses internal thought state for curiosity
+                # But prediction target is now external reality (env_feedback)
                 reward = self._calculate_combined_reward(
-                    obs, self.prev_system_state, self.prev_action_name, current_state
+                    obs, self.prev_system_state, self.prev_action_name, current_system_thought
                 )
 
                 # JEPA training step
+                # Input: Previous System Thought + Action
+                # Target: Environment Feedback (Reality)
                 pred_error = jepa_agent.train_step(
                     self.prev_system_state,
                     self.prev_action_name,
-                    current_state,
+                    env_feedback,
                     reward
                 )
 
@@ -291,13 +333,13 @@ class AdvancedAISystem:
                         "action": self.prev_action_name,
                         "reward": reward,
                         "pred_error": pred_error,
-                        "next_vector": current_state.tolist(),
+                        "next_vector": env_feedback.tolist(),
                         "timestamp": time.time()
                     }
                 )
 
-        # Update previous state for next iteration
-        self.prev_system_state = current_state.copy()
+        # Update previous state for next iteration (Input is System Thought)
+        self.prev_system_state = current_system_thought.copy()
         self.prev_action_name = tool_name
 
         return tool_name, tool_info
@@ -531,23 +573,22 @@ def main():
             weight_mag = system.gnn.train(reward)
             system.episode_log.append(f"[BRAIN] Synaptic Update: Reward={reward}, Weights={weight_mag:.4f}")
 
-            # === Meta-Learning: Adapt agent learning rates ===
+            # === Meta-Learning: C-Stage Suppression ===
             # Calculate task loss from episode (negative reward)
             task_loss = max(0.0, 1.0 - reward)  # Convert [-1,1] reward to  loss
 
-            # Meta-train each agent that has trainable parameters
-            meta_train_results = {}
+            # Check for suppression
+            meta_suppress_results = {}
             for agent_name in system.agents:
-                # Use updated meta_train_agent which returns impact data
-                impact = system.meta.meta_train_agent(agent_name, task_loss)
+                # Use suppress_agent
+                impact = system.meta.suppress_agent(agent_name, task_loss)
                 if impact:
-                    meta_train_results[agent_name] = impact
+                    meta_suppress_results[agent_name] = impact
 
             # Log summary
-            if meta_train_results:
-                # simplify log for readability
-                short_res = {k: f"{v['old_lr']:.2e}->{v['new_lr']:.2e}" for k,v in meta_train_results.items()}
-                system.episode_log.append(f"[META-TRAIN] Impact: {short_res}")
+            if meta_suppress_results:
+                short_res = {k: "SUPPRESSED" for k in meta_suppress_results.keys()}
+                system.episode_log.append(f"[META-KERNEL] Suppression: {short_res}")
 
             # === Neural Architecture Search trigger ===
             # Every 3 episodes, check for underperforming agents
