@@ -7,8 +7,9 @@ class DSLSolver:
     Symbolic Solver for ARC.
     Searches for a program (DSL composition) that solves all training examples.
     """
-    def __init__(self):
+    def __init__(self, max_depth: int = 2):
         self.primitives = ARCDSL.get_primitives()
+        self.max_depth = max_depth
         
     def solve(self, train_examples: List[Dict[str, Any]], test_input: List[List[int]]) -> Optional[List[Dict[str, Any]]]:
         """
@@ -27,13 +28,14 @@ class DSLSolver:
         best_program = None
         
         # Level 1 Search: Single Primitive
-        for prim in self.primitives:
-            if self._check_program(prim, train_pairs):
-                best_program = prim
-                break
+        if self.max_depth >= 1:
+            for prim in self.primitives:
+                if self._check_program(prim, train_pairs):
+                    best_program = prim
+                    break
                 
         # Level 2 Search: Composition (f(g(x)))
-        if not best_program:
+        if not best_program and self.max_depth >= 2:
             for p1 in self.primitives:
                 for p2 in self.primitives:
                     def composed(x, _p1=p1, _p2=p2): return _p1(_p2(x))

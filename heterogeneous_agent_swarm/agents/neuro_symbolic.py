@@ -10,6 +10,15 @@ class NeuroSymbolicVerifierAgent:
         self.name = name
         self.artifacts = {"verdict": "allow"}
 
+    def get_capacity_metric(self) -> float:
+        return 0.5  # Fixed for now
+
+    def increase_capacity(self, factor: float = 1.0) -> dict:
+        return {"action": "increase_capacity", "status": "not_applicable"}
+
+    def decrease_capacity(self, factor: float = 1.0) -> dict:
+        return {"action": "decrease_capacity", "status": "not_applicable"}
+
     def _calculate_verification_confidence(self, state: Any, memory: Dict[str, Any]) -> float:
         """
         Calculate confidence score for veto decision.

@@ -14,26 +14,27 @@ class JEPAConfig:
     input_dim: int = 16
     action_dim: int = 8
     momentum: float = 0.99
+    hidden_dim: int = 128  # Added for variable capacity
 
 class JEPAEncoder(nn.Module):
-    def __init__(self, input_dim: int, latent_dim: int):
+    def __init__(self, input_dim: int, latent_dim: int, hidden_dim: int = 128):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(128, latent_dim)
+            nn.Linear(hidden_dim, latent_dim)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 class JEPAPredictor(nn.Module):
-    def __init__(self, latent_dim: int, action_dim: int):
+    def __init__(self, latent_dim: int, action_dim: int, hidden_dim: int = 128):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(latent_dim + action_dim, 128),
+            nn.Linear(latent_dim + action_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(128, latent_dim)
+            nn.Linear(hidden_dim, latent_dim)
         )
 
     def forward(self, latent: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
@@ -56,9 +57,9 @@ class JEPAWorldModelAgent:
         self.device = torch.device(config.device)
 
         # Networks
-        self.encoder = JEPAEncoder(config.input_dim, config.latent_dim).to(self.device)
-        self.predictor = JEPAPredictor(config.latent_dim, config.action_dim).to(self.device)
-        self.target_encoder = JEPAEncoder(config.input_dim, config.latent_dim).to(self.device)
+        self.encoder = JEPAEncoder(config.input_dim, config.latent_dim, config.hidden_dim).to(self.device)
+        self.predictor = JEPAPredictor(config.latent_dim, config.action_dim, config.hidden_dim).to(self.device)
+        self.target_encoder = JEPAEncoder(config.input_dim, config.latent_dim, config.hidden_dim).to(self.device)
         self.target_encoder.load_state_dict(self.encoder.state_dict())
 
         # Optimizer
@@ -71,6 +72,106 @@ class JEPAWorldModelAgent:
         self.action_embedding = nn.Embedding(len(self.ACTION_TO_IDX), config.action_dim).to(self.device)
 
         self.train_step_count = 0
+        self.parameter_count = self._count_params()
+
+    def _count_params(self) -> int:
+        return sum(p.numel() for p in self.encoder.parameters() if p.requires_grad) + \
+               sum(p.numel() for p in self.predictor.parameters() if p.requires_grad)
+
+    def get_capacity_metric(self) -> float:
+        """Return a scalar metric representing current capacity/utilization."""
+        # Normalize arbitrarily for now (e.g. against base of ~5000 params)
+        return self._count_params() / 5000.0
+
+    def increase_capacity(self, factor: float = 1.5) -> dict:
+        """Increase model capacity by widening hidden layers."""
+        old_hidden = self.config.hidden_dim
+        new_hidden = int(old_hidden * factor)
+
+        # Create new networks with wider hidden layers
+        new_encoder = JEPAEncoder(self.config.input_dim, self.config.latent_dim, new_hidden).to(self.device)
+        new_predictor = JEPAPredictor(self.config.latent_dim, self.config.action_dim, new_hidden).to(self.device)
+
+        # Attempt to copy weights where possible (simple slicing)
+        # Note: This loses some information but preserves rough initialization scale
+        with torch.no_grad():
+            # Encoder
+            new_encoder.net[0].weight[:old_hidden, :] = self.encoder.net[0].weight
+            new_encoder.net[0].bias[:old_hidden] = self.encoder.net[0].bias
+            new_encoder.net[2].weight[:, :old_hidden] = self.encoder.net[2].weight
+
+            # Predictor
+            new_predictor.net[0].weight[:old_hidden, :] = self.predictor.net[0].weight
+            new_predictor.net[0].bias[:old_hidden] = self.predictor.net[0].bias
+            new_predictor.net[2].weight[:, :old_hidden] = self.predictor.net[2].weight
+
+        # Update components
+        self.encoder = new_encoder
+        self.predictor = new_predictor
+        self.target_encoder = JEPAEncoder(self.config.input_dim, self.config.latent_dim, new_hidden).to(self.device)
+        self.target_encoder.load_state_dict(self.encoder.state_dict())
+        self.config.hidden_dim = new_hidden
+
+        # Recreate optimizer
+        self.optimizer = torch.optim.Adam(
+            list(self.encoder.parameters()) + list(self.predictor.parameters()),
+            lr=self.config.learning_rate
+        )
+
+        self.parameter_count = self._count_params()
+
+        return {
+            "action": "increase_capacity",
+            "old_hidden": old_hidden,
+            "new_hidden": new_hidden,
+            "new_params": self.parameter_count
+        }
+
+    def decrease_capacity(self, factor: float = 0.7) -> dict:
+        """Decrease model capacity."""
+        old_hidden = self.config.hidden_dim
+        new_hidden = max(16, int(old_hidden * factor))
+
+        if new_hidden >= old_hidden:
+             return {"action": "decrease_capacity", "status": "noop_limit_reached"}
+
+        # Create new narrower networks
+        new_encoder = JEPAEncoder(self.config.input_dim, self.config.latent_dim, new_hidden).to(self.device)
+        new_predictor = JEPAPredictor(self.config.latent_dim, self.config.action_dim, new_hidden).to(self.device)
+
+        # Slice weights
+        with torch.no_grad():
+            # Encoder
+            new_encoder.net[0].weight = nn.Parameter(self.encoder.net[0].weight[:new_hidden, :])
+            new_encoder.net[0].bias = nn.Parameter(self.encoder.net[0].bias[:new_hidden])
+            new_encoder.net[2].weight = nn.Parameter(self.encoder.net[2].weight[:, :new_hidden])
+
+            # Predictor
+            new_predictor.net[0].weight = nn.Parameter(self.predictor.net[0].weight[:new_hidden, :])
+            new_predictor.net[0].bias = nn.Parameter(self.predictor.net[0].bias[:new_hidden])
+            new_predictor.net[2].weight = nn.Parameter(self.predictor.net[2].weight[:, :new_hidden])
+
+        # Update
+        self.encoder = new_encoder
+        self.predictor = new_predictor
+        self.target_encoder = JEPAEncoder(self.config.input_dim, self.config.latent_dim, new_hidden).to(self.device)
+        self.target_encoder.load_state_dict(self.encoder.state_dict())
+        self.config.hidden_dim = new_hidden
+
+        # Recreate optimizer
+        self.optimizer = torch.optim.Adam(
+            list(self.encoder.parameters()) + list(self.predictor.parameters()),
+            lr=self.config.learning_rate
+        )
+
+        self.parameter_count = self._count_params()
+
+        return {
+            "action": "decrease_capacity",
+            "old_hidden": old_hidden,
+            "new_hidden": new_hidden,
+            "new_params": self.parameter_count
+        }
 
     def _get_action_tensor(self, action_name: str) -> torch.Tensor:
         """Convert action name to embedding tensor."""
@@ -159,6 +260,7 @@ class JEPAWorldModelAgent:
         pred_loss = F.mse_loss(z_t1_pred, z_t1_target)
 
         # Variance loss (prevent collapse)
+        # Fix: unbiased=False to suppress warning
         var_loss = torch.mean(F.relu(1.0 - torch.std(z_t, dim=0, unbiased=False))) + \
                    torch.mean(F.relu(1.0 - torch.std(z_t1_target, dim=0, unbiased=False)))
 

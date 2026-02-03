@@ -22,7 +22,7 @@ from heterogeneous_agent_swarm.agents.snn_reflex import SNNReflexAgent, SNNConfi
 class ChangeProposal:
     proposal_id: str
     ts: float
-    kind: str                    # "drop_agent" | "add_agent" | "policy_update"
+    kind: str                    # "drop_agent" | "add_agent" | "policy_update" | "architecture_modification"
     payload: Dict[str, Any]
     rationale: str = ""
     votes: Dict[str, bool] = field(default_factory=dict)  # agent_name -> approve/deny
@@ -158,6 +158,15 @@ class MetaKernelV2:
                 if strategy not in ["weighted_perf", "consensus", "random"]:
                     return f"Invalid selection_strategy: {strategy}."
 
+        elif cp.kind == "architecture_modification":
+            target_agent = cp.payload.get("target_agent")
+            if target_agent not in self.agents_dict:
+                return f"Target agent {target_agent} not found."
+
+            modification = cp.payload.get("modification")
+            if modification not in ["increase_capacity", "decrease_capacity"]:
+                return f"Unknown modification type: {modification}"
+
         return True
 
     def commit(self, proposal_id: str) -> bool:
@@ -217,10 +226,38 @@ class MetaKernelV2:
             self.audit.emit("meta_commit_policy_update", {"id": proposal_id, "payload": cp.payload})
             return True
 
+        elif cp.kind == "architecture_modification":
+            # NEW: Actually modify agent structure
+            target_agent_name = cp.payload.get("target_agent")
+            modification_type = cp.payload.get("modification", "increase_capacity")
+
+            if target_agent_name in self.agents_dict:
+                agent = self.agents_dict[target_agent_name]
+
+                result_meta = {}
+                if modification_type == "increase_capacity":
+                    if hasattr(agent, 'increase_capacity'):
+                        result_meta = agent.increase_capacity()
+                    else:
+                        result_meta = {"status": "error", "reason": "method_missing"}
+
+                elif modification_type == "decrease_capacity":
+                    if hasattr(agent, 'decrease_capacity'):
+                        result_meta = agent.decrease_capacity()
+                    else:
+                        result_meta = {"status": "error", "reason": "method_missing"}
+
+                self.audit.emit("arch_mod_commit", {
+                    "agent": target_agent_name,
+                    "modification": modification_type,
+                    "result": result_meta
+                })
+                return True
+
         self.audit.emit("meta_commit_noop", {"id": proposal_id, "kind": cp.kind})
         return True
 
-    def meta_train_agent(self, agent_name: str, task_loss: float) -> bool:
+    def meta_train_agent(self, agent_name: str, task_loss: float) -> Optional[Dict[str, Any]]:
         """
         Meta-optimization: Adapt agent's learning rate based on performance.
         This is the "learning to learn" loop.
@@ -230,18 +267,18 @@ class MetaKernelV2:
             task_loss: Recent task loss (higher = worse performance)
 
         Returns:
-            bool: True if adjustment was made
+            Dict with impact data or None if no update.
         """
         if agent_name not in self.agents_dict:
-            return False
+            return None
 
         agent = self.agents_dict[agent_name]
 
         # Check if agent has optimizer
         if not hasattr(agent, 'optimizer') or not hasattr(agent.optimizer, 'param_groups'):
-            return False
+            return None
 
-        # Get current learning rate
+        # Get current learning rate - fix for previous bug
         current_lr = agent.optimizer.param_groups[0]['lr']
 
         # Meta-learning rule:
@@ -262,16 +299,21 @@ class MetaKernelV2:
         for param_group in agent.optimizer.param_groups:
             param_group['lr'] = new_lr
 
-        # Log the meta-update
-        self.audit.emit("meta_train", {
+        # Track impact
+        impact_data = {
             "agent": agent_name,
             "old_lr": current_lr,
             "new_lr": new_lr,
             "task_loss": task_loss,
-            "reason": reason
-        })
+            "reason": reason,
+            "timestamp": time.time(),
+            "learning_rate_change_ratio": new_lr / (current_lr + 1e-8)
+        }
 
-        return True
+        # Log the meta-update
+        self.audit.emit("meta_train_impact", impact_data)
+
+        return impact_data
 
     def suggest_architecture_modification(self, agent_name: str) -> Optional[ChangeProposal]:
         """
@@ -287,18 +329,28 @@ class MetaKernelV2:
         if agent_name not in self.agents_dict:
             return None
 
+        agent = self.agents_dict[agent_name]
+
         # Get performance history
         perf = self.graph.node_perf.get(agent_name, 0.5)
 
         # Check if consistently underperforming (threshold < 0.3)
-        if perf < 0.3:
-            # Suggest capacity increase via policy update
+        # Also check if agent supports modification
+        if perf < 0.3 and hasattr(agent, 'increase_capacity'):
+
+            # Get current stats if available
+            current_cap = 0.0
+            if hasattr(agent, 'get_capacity_metric'):
+                current_cap = agent.get_capacity_metric()
+
+            # Suggest capacity increase via architecture_modification
             proposal = self.propose(
-                kind="policy_update",
+                kind="architecture_modification",
                 payload={
                     "target_agent": agent_name,
                     "modification": "increase_capacity",
-                    "current_perf": perf
+                    "current_perf": perf,
+                    "current_capacity_metric": current_cap
                 },
                 rationale=f"Auto-NAS: Agent {agent_name} underperforming (perf={perf:.2f}). Suggesting capacity boost."
             )
