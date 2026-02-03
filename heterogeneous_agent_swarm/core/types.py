@@ -1,5 +1,12 @@
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Protocol, runtime_checkable
+import numpy as np
+
+@runtime_checkable
+class StateVectorProvider(Protocol):
+    def get_vector(self) -> np.ndarray:
+        """Returns the vector representation of the state."""
+        ...
 
 @dataclass
 class Proposal:
@@ -19,6 +26,13 @@ class EncodedState:
     uncertainty: float
     risk_flags: List[str]
     raw_obs: Dict[str, Any]
+    system_thought: Optional[List[float]] = None
+
+    def get_vector(self) -> np.ndarray:
+        if self.system_thought is not None:
+            return np.array(self.system_thought, dtype=np.float32)
+        # Fallback or empty if not set
+        return np.array([], dtype=np.float32)
 
 @dataclass
 class AgentConfig:
