@@ -52,7 +52,10 @@ class MetaKernelV2:
         self.device = device
         self.min_quorum = min_quorum
         self.proposals: Dict[str, ChangeProposal] = {}
-        self.consecutive_failures: Dict[str, int] = {}  # Track consecutive poor performance
+
+        # Track consecutive failures for hard suppression logic
+        self.agent_failure_streaks: Dict[str, int] = collections.defaultdict(int)
+        # self.consecutive_failures removed in favor of agent_failure_streaks
 
         self.agent_factory = {
             "symbolic": (SymbolicSearchAgent, SymbolicConfig),
@@ -258,48 +261,66 @@ class MetaKernelV2:
         self.audit.emit("meta_commit_noop", {"id": proposal_id, "kind": cp.kind})
         return True
 
-    def suppress_agent(self, agent_name: str, task_loss: float) -> Optional[Dict[str, Any]]:
+    def enforce_agent_constraints(self, agent_name: str, task_loss: float) -> Optional[Dict[str, Any]]:
         """
-        C-Stage Structural Rigor: Enforce performance constraints.
-        If an agent consistently fails (task_loss > 0.8), suppress it.
-
-        Args:
-            agent_name: Name of agent to evaluate.
-            task_loss: Recent task loss (higher = worse performance).
-
-        Returns:
-            Dict with suppression data or None if no action.
+        C-Stage Hard Control:
+        If an agent consistently fails (high loss), suppress it entirely.
+        This replaces the "learning rate adjustment" logic.
         """
         if agent_name not in self.agents_dict:
             return None
 
-        # Check failure threshold
-        if task_loss > 0.8:
-            self.consecutive_failures[agent_name] = self.consecutive_failures.get(agent_name, 0) + 1
+        # Thresholds
+        FAILURE_THRESHOLD = 0.8
+        STREAK_LIMIT = 3
+
+        if task_loss > FAILURE_THRESHOLD:
+            self.agent_failure_streaks[agent_name] += 1
         else:
-            self.consecutive_failures[agent_name] = 0
+            self.agent_failure_streaks[agent_name] = 0
 
-        failures = self.consecutive_failures[agent_name]
+        current_streak = self.agent_failure_streaks[agent_name]
 
-        # Trigger suppression if 3 consecutive failures
-        if failures >= 3:
-            # Check if already suppressed
+        # Logic: If streak exceeds limit, SUPPRESS the agent
+        if current_streak >= STREAK_LIMIT:
             if not self.graph.node_suppressed.get(agent_name, False):
-                self.graph.suppress_node(agent_name)
-
-                impact_data = {
+                self.suppress_agent(agent_name, suppress=True)
+                return {
+                    "action": "suppress",
                     "agent": agent_name,
-                    "action": "suppressed",
-                    "reason": "consecutive_failures",
-                    "failures": failures,
-                    "task_loss": task_loss,
-                    "timestamp": time.time()
+                    "reason": f"persistent_failure_streak_{current_streak}",
+                    "loss": task_loss
+                }
+        else:
+            # Attempt recovery if performance improved?
+            # For now, strict: only manual or periodic reset allows recovery.
+            # Or if loss is VERY low, we can unsuspress.
+            if task_loss < 0.2 and self.graph.node_suppressed.get(agent_name, False):
+                self.suppress_agent(agent_name, suppress=False)
+                return {
+                    "action": "unsuppress",
+                    "agent": agent_name,
+                    "reason": "performance_recovery",
+                    "loss": task_loss
                 }
 
-                self.audit.emit("meta_suppression", impact_data)
-                return impact_data
-
         return None
+
+    def suppress_agent(self, agent_name: str, suppress: bool = True) -> None:
+        """
+        Toggle the suppression flag on the graph.
+        """
+        if suppress:
+            self.graph.suppress_node(agent_name)
+        else:
+            self.graph.unsuppress_node(agent_name)
+
+        status = "SUPPRESSED" if suppress else "ACTIVE"
+        self.audit.emit("control_intervention", {
+            "agent": agent_name,
+            "status": status,
+            "timestamp": time.time()
+        })
 
     def suggest_architecture_modification(self, agent_name: str) -> Optional[ChangeProposal]:
         """

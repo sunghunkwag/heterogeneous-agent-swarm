@@ -35,18 +35,18 @@ class TestCStageRigor(unittest.TestCase):
         meta = MetaKernelV2(graph, audit, orch, agents)
 
         # Fail 1
-        res = meta.suppress_agent("agent_bad", 0.9)
+        res = meta.enforce_agent_constraints("agent_bad", 0.9)
         self.assertIsNone(res)
-        self.assertEqual(meta.consecutive_failures["agent_bad"], 1)
+        self.assertEqual(meta.agent_failure_streaks["agent_bad"], 1)
 
         # Fail 2
-        res = meta.suppress_agent("agent_bad", 0.9)
+        res = meta.enforce_agent_constraints("agent_bad", 0.9)
         self.assertIsNone(res)
 
         # Fail 3 -> Trigger
-        res = meta.suppress_agent("agent_bad", 0.9)
+        res = meta.enforce_agent_constraints("agent_bad", 0.9)
         self.assertIsNotNone(res)
-        self.assertEqual(res["action"], "suppressed")
+        self.assertEqual(res["action"], "suppress")
         self.assertTrue(graph.node_suppressed["agent_bad"])
 
     def test_gnn_uncertainty(self):
@@ -76,20 +76,25 @@ class TestCStageRigor(unittest.TestCase):
             "suppressed_agent": Proposal("wait", {}, 0.9, 1.0, 0.1, "wait", "suppressed_agent")
         }
 
-        # 1. Normal Mode
-        tool, _, dbg = orch.choose(proposals, None, system_uncertainty=0.15)
+        # 1. Normal Mode (Uncertainty > 0.01 but < 0.1)
+        # 0.05 is safe middle ground
+        state_mock = MagicMock()
+        state_mock.raw_obs = {}
+
+        tool, _, dbg = orch.choose(proposals, state_mock, system_uncertainty=0.05)
         self.assertEqual(tool, "write_patch")
         self.assertNotIn("suppressed_agent", dbg["all_proposals"])
 
-        # 2. Convergence Mode
-        tool, _, dbg = orch.choose(proposals, None, system_uncertainty=0.01)
+        # 2. Convergence Mode (< 0.01)
+        tool, _, dbg = orch.choose(proposals, state_mock, system_uncertainty=0.005)
         self.assertEqual(tool, "run_tests")
         self.assertNotIn("diffusion_agent", dbg["all_proposals"])
+        self.assertEqual(dbg["gating"], "convergence_lock")
 
-        # 3. Panic Mode
-        tool, _, dbg = orch.choose(proposals, None, system_uncertainty=0.4)
+        # 3. Panic Mode (> 0.1)
+        tool, _, dbg = orch.choose(proposals, state_mock, system_uncertainty=0.15)
         self.assertEqual(tool, "run_tests")
-        self.assertEqual(dbg["reason"], "panic_mode_gating")
+        self.assertEqual(dbg["mode"], "force_safety")
 
     def test_jepa_vector_construction(self):
         # We need to mock minimal parts of AdvancedAISystem to avoid full init

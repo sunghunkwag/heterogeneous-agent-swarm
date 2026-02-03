@@ -223,36 +223,41 @@ class JEPAWorldModelAgent:
             artifacts={"action_values": action_values}
         )
 
-    def train_step(self, prev_obs_vector: np.ndarray, action_name: str,
-                   next_obs_vector: np.ndarray, reward: float) -> float:
+    def train_step(self, prev_system_thought: np.ndarray, action_name: str,
+                   next_env_feedback: np.ndarray, reward: float) -> float:
         """
-        Single gradient step on JEPA loss.
+        Refactored Training Step.
 
         Args:
-            prev_obs_vector: Previous observation (e.g., GNN system_thought)
-            action_name: Action taken
-            next_obs_vector: Resulting observation
-            reward: External reward (not used in loss, but logged)
+            prev_system_thought: The internal GNN state (Context).
+            action_name: The action taken.
+            next_env_feedback: The PHYSICAL result (Sandbox State: [last_ok, fails, diff...]).
+            reward: Scalar reward.
 
         Returns:
-            prediction_error: Float representing curiosity signal
+            prediction_error: Intrinsic curiosity signal.
         """
         self.train_step_count += 1
         self.optimizer.zero_grad()
 
-        # Convert to tensors
-        s_t = torch.FloatTensor(prev_obs_vector).to(self.device)
-        s_t1 = torch.FloatTensor(next_obs_vector).to(self.device)
+        # Inputs
+        s_t = torch.FloatTensor(prev_system_thought).to(self.device)
+        # Target: Environment Feedback
+        env_t1 = torch.FloatTensor(next_env_feedback).to(self.device)
 
         if s_t.dim() == 1:
             s_t = s_t.unsqueeze(0)
-        if s_t1.dim() == 1:
-            s_t1 = s_t1.unsqueeze(0)
+        if env_t1.dim() == 1:
+            env_t1 = env_t1.unsqueeze(0)
 
-        # Forward
+        # 1. Encode Context (Thought)
         z_t = self.encoder(s_t)
-        z_t1_target = self.target_encoder(s_t1).detach()
 
+        # 2. Encode Target (Physical Reality)
+        # We use target_encoder to map physical reality to latent space
+        z_t1_target = self.target_encoder(env_t1).detach()
+
+        # 3. Predict Latent Consequence
         action_emb = self._get_action_tensor(action_name).unsqueeze(0)
         z_t1_pred = self.predictor(z_t, action_emb)
 
