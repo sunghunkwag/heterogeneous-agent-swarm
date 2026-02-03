@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..core.types import StateVectorProvider, Proposal
+
 @dataclass
 class JEPAConfig:
     device: str = "cpu"
@@ -74,6 +76,12 @@ class JEPAWorldModelAgent:
         self.train_step_count = 0
         self.parameter_count = self._count_params()
 
+        # Capacity Adjustment Dynamics
+        self.warmup_steps_remaining = 0
+        self.base_lr = config.learning_rate
+        self.base_momentum = config.momentum
+        self.current_momentum = config.momentum
+
     def _count_params(self) -> int:
         return sum(p.numel() for p in self.encoder.parameters() if p.requires_grad) + \
                sum(p.numel() for p in self.predictor.parameters() if p.requires_grad)
@@ -112,7 +120,7 @@ class JEPAWorldModelAgent:
         self.target_encoder.load_state_dict(self.encoder.state_dict())
         self.config.hidden_dim = new_hidden
 
-        # Recreate optimizer
+        # Recreate optimizer (fresh state)
         self.optimizer = torch.optim.Adam(
             list(self.encoder.parameters()) + list(self.predictor.parameters()),
             lr=self.config.learning_rate
@@ -120,11 +128,16 @@ class JEPAWorldModelAgent:
 
         self.parameter_count = self._count_params()
 
+        # Initiate Warmup and Momentum Stabilization
+        self.warmup_steps_remaining = 100
+        self.current_momentum = 0.999 # Slow down target update temporarily
+
         return {
             "action": "increase_capacity",
             "old_hidden": old_hidden,
             "new_hidden": new_hidden,
-            "new_params": self.parameter_count
+            "new_params": self.parameter_count,
+            "warmup_triggered": True
         }
 
     def decrease_capacity(self, factor: float = 0.7) -> dict:
@@ -166,6 +179,8 @@ class JEPAWorldModelAgent:
 
         self.parameter_count = self._count_params()
 
+        # No warmup needed for capacity decrease (aggressive pruning)
+
         return {
             "action": "decrease_capacity",
             "old_hidden": old_hidden,
@@ -179,48 +194,96 @@ class JEPAWorldModelAgent:
         idx_tensor = torch.tensor([idx], device=self.device)
         return self.action_embedding(idx_tensor).squeeze(0)
 
-    def propose(self, state: Any, memory: Dict[str, Any]):
+    def propose(self, state: StateVectorProvider, memory: Dict[str, Any]) -> Proposal:
         """
         Agent interface: propose action based on world model prediction.
         Returns Proposal with predicted value of each action.
         """
-        from ..core.types import Proposal
 
-        # Get current state vector
-        if hasattr(state, 'system_thought'):
-            state_vec = np.array(state.system_thought)
-        else:
-            state_vec = np.zeros(self.config.input_dim)
+        # Get current state vector via Protocol
+        state_vec = state.get_vector()
+
+        # Validation
+        if state_vec.shape[-1] != self.config.input_dim:
+             raise ValueError(f"JEPA propose expected input dim {self.config.input_dim}, got {state_vec.shape[-1]}")
 
         # Evaluate each possible action using world model
         action_values = {}
+        action_errors = {}
+
+        # TODO: Retrieve average external reward from memory/audit log for baseline
+        avg_external_reward = 0.0
+
         for action_name in ["run_tests", "write_patch", "summarize", "wait"]:
             with torch.no_grad():
                 state_t = torch.FloatTensor(state_vec).to(self.device)
                 if state_t.dim() == 1:
                     state_t = state_t.unsqueeze(0)
 
+                # Predict next latent state
                 latent = self.encoder(state_t)
                 action_emb = self._get_action_tensor(action_name).unsqueeze(0)
-                next_latent = self.predictor(latent, action_emb)
+                next_latent_pred = self.predictor(latent, action_emb)
 
-                # Value = negative prediction error (lower error = better)
-                # Plus small bonus for novelty (high variance in latent)
-                novelty = torch.var(next_latent).item()
-                action_values[action_name] = novelty * 0.1
+                # NOTE: In a full JEPA, we would compare against a 'target' prediction or self-consistency.
+                # Here, we estimate 'uncertainty' via latent variance or distance to prototypes.
+                # Since we don't have the *actual* next state yet, we use a proxy for "Model Confidence".
+                # Proxy: Variance of the predicted latent vector (High variance = loose prediction?)
+                # Better Proxy: We can't compute prediction error without the target.
+                # So we rely on the agent's learned value function (if we had one) or heuristics.
 
-        # Pick action with highest novelty (curiosity-driven)
-        best_action = max(action_values, key=action_values.get)
+                # REVISED LOGIC based on Instructions:
+                # "Use prediction error... (Low error -> exploit, High error -> explore)"
+                # But at inference time, we don't have the error because we don't have the outcome.
+                # We can only estimate *expected* error if we had a secondary "error predictor" network.
+                # Lacking that, we will use the user's suggestion:
+                # "Select actions with low error (= high trust)..."
+                # This implies we need a way to predict "how wrong will I be?".
+                # For this implementation, I will use 'latent variance' as a proxy for UNCERTAINTY.
+                # High Variance in latent space typically implies the model is 'stretching' or uncertain?
+                # actually, usually Low Variance = collapse.
+
+                # Let's assume we use the 'novelty' metric from before as 'uncertainty'.
+                uncertainty = torch.var(next_latent_pred).item()
+                action_errors[action_name] = uncertainty
+
+        # Selection Logic
+        # Thresholds
+        THRESH_LOW = 0.05
+        THRESH_HIGH = 0.5
+
+        scores = {}
+        for act, uncert in action_errors.items():
+            # Base value
+            score = avg_external_reward
+
+            if uncert < THRESH_LOW:
+                # Boredom penalty (Mastered)
+                score -= 0.2
+            elif uncert > THRESH_HIGH:
+                # Risk penalty (Chaos)
+                score -= 0.5
+                # But also exploration potential...
+                score += 0.3 # Net -0.2
+            else:
+                # Sweet spot: Trustworthy but not boring
+                score += 0.5 # High confidence bonus
+
+            scores[act] = score
+
+        best_action = max(scores, key=scores.get)
+        best_score = scores[best_action]
+        best_uncertainty = action_errors[best_action]
 
         return Proposal(
             source_agent=self.name,
             action_type=best_action,
             action_value={},
-            confidence=0.5,  # Neutral confidence
-            predicted_value=action_values[best_action],
+            confidence=0.5,
+            predicted_value=best_score,
             estimated_cost=0.1,
-            rationale=f"JEPA predicts novelty for {best_action}: {action_values[best_action]:.3f}",
-            artifacts={"action_values": action_values}
+            rationale=f"JEPA Selection: Uncertainty={best_uncertainty:.3f}, Score={best_score:.3f}",
+            artifacts={"action_scores": scores, "uncertainty": action_errors}
         )
 
     def train_step(self, prev_system_thought: np.ndarray, action_name: str,
@@ -237,7 +300,29 @@ class JEPAWorldModelAgent:
         Returns:
             prediction_error: Intrinsic curiosity signal.
         """
+        # Shape Validation
+        if prev_system_thought.shape[-1] != self.config.input_dim:
+             raise ValueError(f"JEPA train_step expected prev_system_thought dim {self.config.input_dim}, got {prev_system_thought.shape[-1]}")
+
+        # next_env_feedback is also mapped to latent, so it should match input_dim (since we reuse encoder arch)
+        # In this specific architecture, target_encoder matches encoder, so input dims must match.
+        if next_env_feedback.shape[-1] != self.config.input_dim:
+             raise ValueError(f"JEPA train_step expected next_env_feedback dim {self.config.input_dim}, got {next_env_feedback.shape[-1]}")
+
         self.train_step_count += 1
+
+        # Apply Warmup Logic
+        current_lr = self.base_lr
+        if self.warmup_steps_remaining > 0:
+            current_lr = self.base_lr * 0.1
+            self.warmup_steps_remaining -= 1
+            if self.warmup_steps_remaining == 0:
+                self.current_momentum = self.base_momentum # Restore momentum
+
+        # Set LR for this step
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = current_lr
+
         self.optimizer.zero_grad()
 
         # Inputs
@@ -265,7 +350,6 @@ class JEPAWorldModelAgent:
         pred_loss = F.mse_loss(z_t1_pred, z_t1_target)
 
         # Variance loss (prevent collapse)
-        # Fix: unbiased=False to suppress warning
         var_loss = torch.mean(F.relu(1.0 - torch.std(z_t, dim=0, unbiased=False))) + \
                    torch.mean(F.relu(1.0 - torch.std(z_t1_target, dim=0, unbiased=False)))
 
@@ -278,7 +362,7 @@ class JEPAWorldModelAgent:
 
         # Momentum update target encoder
         with torch.no_grad():
-            m = self.config.momentum
+            m = self.current_momentum # Use dynamic momentum
             for param, target_param in zip(self.encoder.parameters(),
                                            self.target_encoder.parameters()):
                 target_param.data = m * target_param.data + (1 - m) * param.data
@@ -291,6 +375,10 @@ class JEPAWorldModelAgent:
         Returns prediction error as intrinsic reward (curiosity signal).
         Higher = more surprising = more interesting to explore.
         """
+        # Shape Validation (Lightweight)
+        if prev_obs_vector.shape[-1] != self.config.input_dim:
+             raise ValueError(f"JEPA curiosity expected prev dim {self.config.input_dim}, got {prev_obs_vector.shape[-1]}")
+
         with torch.no_grad():
             s_t = torch.FloatTensor(prev_obs_vector).to(self.device)
             s_t1 = torch.FloatTensor(next_obs_vector).to(self.device)

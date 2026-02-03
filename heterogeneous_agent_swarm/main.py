@@ -258,6 +258,8 @@ class AdvancedAISystem:
         
         # C. Agent Proposals
         state = self.encoder.encode(bb.obs)
+        state.system_thought = self.system_thought.tolist() # Populate protocol field
+
         mem = self.work.snapshot()
         mem["system_thought"] = self.system_thought.tolist() # Share consciousness
         
