@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 import copy
 import time
+import numpy as np
 import collections
 
 from .audit import AuditLog
@@ -375,3 +376,56 @@ class MetaKernelV2:
             return proposal
 
         return None
+
+    def emergency_rotation(self) -> Optional[str]:
+        """
+        Smart deadlock recovery: Wake up the best suppressed agent.
+
+        Scoring algorithm: historical_performance - (failure_streak * 0.15)
+
+        Steps:
+        1. Identify all suppressed agents (node_suppressed == True)
+        2. Calculate score for each: perf - (streak * penalty)
+        3. Select agent with highest score
+        4. Call suppress_agent(agent, suppress=False) to reactivate
+        5. Reset agent_failure_streaks[agent] = 0
+        6. Emit audit event with full details
+
+        Returns:
+            str: Name of awakened agent
+            None: If no suppressed agents exist
+
+        Example Output:
+            awakened_agent: "jepa_world_model_agent"
+            awakened_score: 0.65
+            alternative_scores: {"symbolic_search_agent": 0.32, "snn_reflex_agent": -0.15}
+        """
+        suppressed = [
+            name for name, is_suppressed in self.graph.node_suppressed.items()
+            if is_suppressed
+        ]
+
+        if not suppressed:
+            return None
+
+        def score_agent(name: str) -> float:
+            hist_perf = self.graph.node_perf.get(name, 0.0)
+            failure_streak = self.agent_failure_streaks.get(name, 0)
+            penalty = failure_streak * 0.15
+            return hist_perf - penalty
+
+        best_agent = max(suppressed, key=score_agent)
+
+        self.suppress_agent(best_agent, suppress=False)
+        self.agent_failure_streaks[best_agent] = 0
+
+        scores = {name: score_agent(name) for name in suppressed}
+        self.audit.emit("emergency_rotation", {
+            "awakened_agent": best_agent,
+            "awakened_score": scores[best_agent],
+            "alternative_scores": {n: s for n, s in scores.items() if n != best_agent},
+            "reason": "deadlock_mitigation",
+            "timestamp": time.time()
+        })
+
+        return best_agent

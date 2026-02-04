@@ -1,0 +1,35 @@
+{
+  "run_id": "benchmark_1770174666",
+  "episodes": [
+    {
+      "episode_id": 1,
+      "level": 1,
+      "completed": true,
+      "reward": 1.0,
+      "total_steps": 6,
+      "total_cost": 3.0000074768066405,
+      "deadlock_count": 0,
+      "recovery_count": 0,
+      "meta_train_events": 0,
+      "arch_mod_events": 0
+    },
+    {
+      "episode_id": 2,
+      "level": 2,
+      "completed": true,
+      "reward": 1.0,
+      "total_steps": 6,
+      "total_cost": 3.00000497341156,
+      "deadlock_count": 0,
+      "recovery_count": 0,
+      "meta_train_events": 0,
+      "arch_mod_events": 0
+    }
+  ],
+  "total_runtime": 0.12196969985961914,
+  "meta_train_total_count": 0,
+  "arch_mod_total_count": 0,
+  "success_rate": 1.0,
+  "avg_cost_per_episode": 3.0000062251091,
+  "deadlock_recovery_rate": 0.0
+}
