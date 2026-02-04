@@ -3,6 +3,7 @@ import argparse
 import sys
 import os
 import copy
+import json
 import numpy as np
 from datetime import datetime
 from collections import Counter
@@ -102,9 +103,6 @@ class AdvancedAISystem:
 
         self.prev_system_state = None
         self.prev_action_name = None
-
-        # Warmup for JEPA input dim
-        self.agents["jepa_agent"].config.input_dim = 16  
 
     def _register_tools(self):
         def tool_run_tests(_args):
@@ -309,26 +307,38 @@ def main():
             task_text = f"Ep {episode}: [bold cyan]G{meta_meta.generation}:C{meta_meta.current_candidate_idx}[/]"
             
             # --- OPTIMIZED STRUCTURAL RSI: Only Re-init if Genome Changed ---
-            if curr_conf != last_applied_genome:
+            # Deep comparison to handle potential nested structures in future config formats
+            if json.dumps(curr_conf, sort_keys=True) != json.dumps(last_applied_genome, sort_keys=True):
                 # 1. JEPA
                 if "jepa_agent" in system.agents:
                     agent = system.agents["jepa_agent"]
                     if agent.config.num_layers != curr_conf["jepa_depth"]:
+                        old_state = agent.get_state_dict() if hasattr(agent, 'get_state_dict') else None
                         from heterogeneous_agent_swarm.agents.jepa_world_model import JEPAConfig, JEPAWorldModelAgent
                         system.agents["jepa_agent"] = JEPAWorldModelAgent("jepa_agent", JEPAConfig(device=system.device, learning_rate=curr_conf["jepa_lr"], num_layers=curr_conf["jepa_depth"]))
+                        if old_state:
+                            system.agents["jepa_agent"].load_compatible_state(old_state)
                     else: agent.update_hyperparameters(lr=curr_conf["jepa_lr"])
 
                 # 2. SNN
                 if "snn_agent" in system.agents:
-                    if system.agents["snn_agent"].config.hidden_neurons != curr_conf["snn_neurons"]:
+                    agent = system.agents["snn_agent"]
+                    if agent.config.hidden_neurons != curr_conf["snn_neurons"]:
+                        old_state = agent.get_state_dict() if hasattr(agent, 'get_state_dict') else None
                         from heterogeneous_agent_swarm.agents.snn_reflex import SNNConfig, SNNReflexAgent
                         system.agents["snn_agent"] = SNNReflexAgent("snn_agent", SNNConfig(hidden_neurons=curr_conf["snn_neurons"]))
+                        if old_state:
+                            system.agents["snn_agent"].load_compatible_state(old_state)
                 
                 # 3. Symbolic
                 if "symbolic_agent" in system.agents:
-                    if system.agents["symbolic_agent"].config.max_search_depth != curr_conf["symbolic_depth"]:
+                    agent = system.agents["symbolic_agent"]
+                    if agent.config.max_search_depth != curr_conf["symbolic_depth"]:
+                        old_state = agent.get_state_dict() if hasattr(agent, 'get_state_dict') else None
                         from heterogeneous_agent_swarm.agents.symbolic_search import SymbolicConfig, SymbolicSearchAgent
                         system.agents["symbolic_agent"] = SymbolicSearchAgent("symbolic_agent", SymbolicConfig(max_search_depth=curr_conf["symbolic_depth"]))
+                        if old_state:
+                            system.agents["symbolic_agent"].load_compatible_state(old_state)
 
                 if hasattr(system.meta, 'update_min_quorum'):
                     system.meta.update_min_quorum(curr_conf["meta_min_quorum"])
@@ -340,13 +350,15 @@ def main():
             bb.obs = {**system.env.observe(), **system.sandbox.observe()}
             system.episode_log.append(f"--- EPISODE {episode} START ---")
             
-            episode_start_event_count = len(system.audit.events)
+            episode_start_event_count = len(system.audit.records)
             steps_limit = 20
             reward = 0.0 
             deadlock_count = 0; recovery_count = 0
 
-            for step in range(steps_limit):
+            step = 0
+            while step < steps_limit:
                 tool, info = system.step(bb)
+                step += 1
                 if tool == "emergency_stop": reward = -1.0; break
                 
                 # ===== TRACK IDLE STEPS =====
@@ -373,7 +385,8 @@ def main():
                         system.consecutive_idle_count = 0
                         recovery_count += 1
                         system.deadlock_recovery_stats["successful_recoveries"] += 1
-                        continue  # Immediately retry with new agent
+                        # Immediately retry with new agent
+                        continue
 
                     # ===== PHASE 2: Forced Random Exploration =====
                     system.episode_log.append("[PHASE 2: FORCED EXPLORATION] Attempting 3-step recovery...")
@@ -390,6 +403,7 @@ def main():
                         }
 
                         r_tool, r_info = system.step(bb, force_strategy="random", memory=memory)
+                        step += 1
 
                         system.episode_log.append(
                             f"[RECOVERY ATTEMPT {recovery_attempt + 1}] Action: {r_tool}, "
@@ -433,7 +447,7 @@ def main():
             
             # --- PORTABLE RSI LOGGING: Use relative path ---
             try:
-                import json
+                # import json # already imported at top
                 genome_path = os.path.join(os.getcwd(), "current_genome.json")
                 with open(genome_path, "w") as f:
                     json.dump({
@@ -441,12 +455,17 @@ def main():
                         "level": current_level, "genome": curr_conf,
                         "ucb": {k: {"n": meta_meta.counts[k], "v": meta_meta.values[k]} for k in meta_meta.mutations}
                     }, f, indent=2)
-            except Exception: pass
+            except Exception as e:
+                system.episode_log.append(f"[WARNING] Failed to save genome: {e}")
 
             weight_mag = system.gnn.train(reward)
+            system.episode_log.append(f"[GNN] Weight magnitude: {weight_mag:.4f}")
             task_loss = max(0.0, 1.0 - reward)
+
+            CONSTRAINT_EXEMPT_AGENTS = {"symbolic_agent"}  # Stateless agents don't require constraint enforcement
             for agent_name in system.agents:
-                if agent_name != "symbolic_agent": system.meta.enforce_agent_constraints(agent_name, task_loss)
+                if agent_name not in CONSTRAINT_EXEMPT_AGENTS:
+                    system.meta.enforce_agent_constraints(agent_name, task_loss)
 
             if episode % 3 == 0:
                 for agent_name in system.agents:
@@ -455,21 +474,21 @@ def main():
                         system.meta.vote(prop.proposal_id, "orchestrator", True)
                         if system.meta._quorum_ok(prop): system.meta.commit(prop.proposal_id)
             
-            ep_events = system.audit.events[episode_start_event_count:]
+            ep_events = list(system.audit.records)[episode_start_event_count:]
             results_manager.record_episode(EpisodeResult(
                 episode_id=episode, level=episode if args.benchmark else current_level,
                 completed=bb.obs.get("last_test_ok", False), reward=reward, total_steps=step + 1,
                 total_cost=sum(system.budget_history[-step:]) if step > 0 else 0,
                 deadlock_count=deadlock_count, recovery_count=recovery_count,
-                meta_train_events=len([e for e in ep_events if e["type"] in ["meta_train", "meta_train_impact"]]),
-                arch_mod_events=len([e for e in ep_events if e["type"] == "arch_mod_commit"])
+                meta_train_events=len([e for e in ep_events if e.event in ["meta_train", "meta_train_impact"]]),
+                arch_mod_events=len([e for e in ep_events if e.event == "arch_mod_commit"])
             ))
             episode += 1
 
     results_filename = results_manager.finalize_benchmark(
         run_id=f"benchmark_{int(time.time())}", total_runtime=time.time() - run_start_time,
-        meta_train_count=len([e for e in system.audit.events if e["type"] in ["meta_train", "meta_train_impact"]]),
-        arch_mod_count=len([e for e in system.audit.events if e["type"] == "arch_mod_commit"]),
+        meta_train_count=len([e for e in system.audit.records if e.event in ["meta_train", "meta_train_impact"]]),
+        arch_mod_count=len([e for e in system.audit.records if e.event == "arch_mod_commit"]),
         deadlock_recovery_rate=system.deadlock_recovery_stats.get("recovery_rate", 0.0)
     )
     print(f"Results: {results_filename}\nHalted.")

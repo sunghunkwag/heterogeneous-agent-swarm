@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from typing import Dict, Any
 from dataclasses import dataclass
 from ..core.types import Proposal
 
@@ -34,6 +35,25 @@ class SNNReflexAgent:
         self.config = config
         self.device = torch.device(config.device)
         self.core = SNNCore(config.input_dim, config.hidden_neurons, config.output_dim).to(self.device)
+
+    def get_state_dict(self) -> Dict[str, Any]:
+        """Return the state dictionary of the agent."""
+        return {
+            "core": self.core.state_dict()
+        }
+
+    def load_compatible_state(self, state_dict: Dict[str, Any]):
+        """Load state dictionary, skipping mismatched shapes."""
+        if "core" in state_dict:
+            core_state = self.core.state_dict()
+            loaded_state = state_dict["core"]
+
+            compatible_state = {}
+            for k, v in loaded_state.items():
+                if k in core_state and core_state[k].shape == v.shape:
+                    compatible_state[k] = v
+
+            self.core.load_state_dict(compatible_state, strict=False)
 
     def propose(self, state, memory) -> Proposal:
         last_tool = memory.get("last_tool")

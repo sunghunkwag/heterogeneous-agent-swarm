@@ -21,6 +21,8 @@ class TestJEPA(unittest.TestCase):
         # Mock state
         class MockState:
             system_thought = np.random.randn(16)
+            def get_vector(self):
+                return self.system_thought
 
         proposal = self.agent.propose(MockState(), {})
 

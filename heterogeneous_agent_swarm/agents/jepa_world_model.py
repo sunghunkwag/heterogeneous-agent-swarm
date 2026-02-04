@@ -207,6 +207,40 @@ class JEPAWorldModelAgent:
             "new_params": self.parameter_count
         }
 
+    def get_state_dict(self) -> Dict[str, Any]:
+        """Return the state dictionary of the agent."""
+        return {
+            "encoder": self.encoder.state_dict(),
+            "predictor": self.predictor.state_dict(),
+            "target_encoder": self.target_encoder.state_dict(),
+            "action_embedding": self.action_embedding.state_dict(),
+            "optimizer": self.optimizer.state_dict()
+        }
+
+    def load_compatible_state(self, state_dict: Dict[str, Any]):
+        """Load state dictionary, skipping mismatched shapes."""
+        def load_model_state(model, state_key):
+            if state_key not in state_dict:
+                return
+            model_state = model.state_dict()
+            loaded_state = state_dict[state_key]
+
+            compatible_state = {}
+            for k, v in loaded_state.items():
+                if k in model_state and model_state[k].shape == v.shape:
+                    compatible_state[k] = v
+
+            model.load_state_dict(compatible_state, strict=False)
+
+        load_model_state(self.encoder, "encoder")
+        load_model_state(self.predictor, "predictor")
+        load_model_state(self.target_encoder, "target_encoder")
+        load_model_state(self.action_embedding, "action_embedding")
+
+        # Optimizer is tricky if shapes changed, usually safer to skip or partial load
+        # For simplicity, we skip optimizer state if we are doing structural changes
+        # as the momentum buffers would be mismatched.
+
     def _get_action_tensor(self, action_name: str) -> torch.Tensor:
         """Convert action name to embedding tensor."""
         idx = self.ACTION_TO_IDX.get(action_name, 5)  # Default to "none"

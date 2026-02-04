@@ -1,7 +1,7 @@
 {
   "generation": 0,
   "candidate": 0,
-  "level": 1,
+  "level": 2,
   "genome": {
     "jepa_lr": 0.001,
     "jepa_depth": 2,

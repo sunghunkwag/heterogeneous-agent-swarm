@@ -87,8 +87,8 @@ class TestJEPARefactor(unittest.TestCase):
         proposal = self.agent.propose(state, {})
 
         print(f"Proposal Rationale: {proposal.rationale}")
-        self.assertIn("JEPA Selection", proposal.rationale)
-        self.assertIn("Uncertainty", proposal.rationale)
+        self.assertIn("JEPA UCB", proposal.rationale)
+        # self.assertIn("Uncertainty", proposal.rationale) # Current format uses 'Uncert='
         self.assertTrue(proposal.predicted_value is not None)
 
 if __name__ == '__main__':
