@@ -52,6 +52,20 @@ class SymbolicSearchAgent:
             "new_depth": new_depth
         }
 
+    def get_state_dict(self) -> Dict[str, Any]:
+        """Return the state dictionary of the agent."""
+        return {
+            "plan_queue": self.plan_queue,
+            "last_solved_task": self.last_solved_task
+        }
+
+    def load_compatible_state(self, state_dict: Dict[str, Any]):
+        """Load state dictionary."""
+        if "plan_queue" in state_dict:
+            self.plan_queue = state_dict["plan_queue"]
+        if "last_solved_task" in state_dict:
+            self.last_solved_task = state_dict["last_solved_task"]
+
     def propose(self, state: EncodedState, bus_memory: Dict[str, Any]) -> Proposal:
         obs = state.raw_obs
         system_thought = np.array(bus_memory.get("system_thought", [0.0]*16))
