@@ -47,7 +47,7 @@ class DSLSolver:
         # 3. Apply to test input
         if best_program:
             prediction = best_program(test_in)
-            return self._grid_to_actions(prediction)
+            return self._grid_to_actions(prediction, input_grid=test_in)
             
         return None
 
@@ -61,13 +61,30 @@ class DSLSolver:
                 return False
         return True
 
-    def _grid_to_actions(self, grid: np.ndarray) -> List[Dict[str, Any]]:
+    def _grid_to_actions(self, grid: np.ndarray, input_grid: Optional[np.ndarray] = None) -> List[Dict[str, Any]]:
         actions = []
         h, w = grid.shape
+
+        # Check if we can perform diff-based optimization
+        can_diff = input_grid is not None and grid.shape == input_grid.shape
+
         for y in range(h):
             for x in range(w):
                 color = int(grid[y, x])
-                # Optimization: Only write non-zero or if different from input?
-                # For safety, write everything for now (or optimize later)
-                actions.append({"x": x, "y": y, "color": color})
+
+                # Optimization: Only write if different from input (if comparable) or non-zero (if not)
+                should_write = False
+
+                if can_diff:
+                    # Write only if pixel changed
+                    if color != int(input_grid[y, x]):
+                        should_write = True
+                else:
+                    # Write only if non-zero (assuming fresh/black canvas for new shapes)
+                    if color != 0:
+                        should_write = True
+
+                if should_write:
+                    actions.append({"x": x, "y": y, "color": color})
+
         return actions
