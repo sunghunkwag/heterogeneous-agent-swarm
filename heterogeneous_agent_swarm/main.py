@@ -47,6 +47,10 @@ from heterogeneous_agent_swarm.agents.diffusion_explorer import DiffusionExplore
 from heterogeneous_agent_swarm.agents.ssm_stability import SSMStabilityAgent, SSMConfig
 from heterogeneous_agent_swarm.agents.snn_reflex import SNNReflexAgent, SNNConfig
 
+# Agents that don't require constraint enforcement because they are stateless
+# and don't have trainable parameters that could degrade over time
+CONSTRAINT_EXEMPT_AGENTS = {"symbolic_agent"}
+
 class AdvancedAISystem:
     def __init__(self, device="cpu", arc_mode=False):
         self.console = Console()
@@ -389,7 +393,7 @@ def main():
                         continue
 
                     # ===== PHASE 2: Forced Random Exploration =====
-                    system.episode_log.append("[PHASE 2: FORCED EXPLORATION] Attempting 3-step recovery...")
+                    system.episode_log.append(f"[PHASE 2] Starting 3-attempt recovery at step {step}")
                     escaped = False
 
                     error_rate = system.work.get("error_rate", 1.0)
@@ -462,7 +466,7 @@ def main():
             system.episode_log.append(f"[GNN] Weight magnitude: {weight_mag:.4f}")
             task_loss = max(0.0, 1.0 - reward)
 
-            CONSTRAINT_EXEMPT_AGENTS = {"symbolic_agent"}  # Stateless agents don't require constraint enforcement
+            # Enforce constraints on agents (excluding stateless agents)
             for agent_name in system.agents:
                 if agent_name not in CONSTRAINT_EXEMPT_AGENTS:
                     system.meta.enforce_agent_constraints(agent_name, task_loss)
