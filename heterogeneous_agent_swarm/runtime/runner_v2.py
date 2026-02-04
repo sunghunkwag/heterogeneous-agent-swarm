@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, List
 import uuid
+import time
 
 from rich.console import Console
 
@@ -49,6 +50,7 @@ class RunnerV2:
         self.semantic = SemanticMemory()
 
         self.tasks = TaskQueue()
+        self.last_success_time = time.time()
 
     def _collect_proposals(self, state: EncodedState) -> Dict[str, Proposal]:
         proposals: Dict[str, Proposal] = {}
@@ -94,7 +96,7 @@ class RunnerV2:
         for _ in range(max_tool_steps):
             # Check SNN Interrupts
             snn_signals = {
-                "time_since_success": 0.0, # Stub
+                "time_since_success": time.time() - self.last_success_time,
                 "error_rate": self.eval.evaluate(bb.__dict__).score * -1, 
                 "budget_slope": -0.1,
                 "entropy": 0.5
@@ -144,6 +146,7 @@ class RunnerV2:
 
             # Stop if solved
             if obs.get("last_test_ok", False):
+                self.last_success_time = time.time()
                 break
 
         # Evaluate
