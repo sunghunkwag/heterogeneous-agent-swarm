@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+benchmark_results/
+current_genome.json
+benchmark_log*.txt

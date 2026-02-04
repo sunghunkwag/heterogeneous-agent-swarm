@@ -2,6 +2,7 @@ import time
 import argparse
 import sys
 import os
+import copy
 import numpy as np
 from datetime import datetime
 from collections import Counter
@@ -181,7 +182,7 @@ class AdvancedAISystem:
             intrinsic = 0.0
         return 0.7 * extrinsic + 0.3 * intrinsic
 
-    def step(self, bb: Blackboard, force_strategy: str = None):
+    def step(self, bb: Blackboard, force_strategy: str = None, memory: Dict[str, Any] = None):
         current_time = time.time()
         t_since = current_time - (self.last_success_time if self.last_success_time else self.start_time)
 
@@ -203,7 +204,9 @@ class AdvancedAISystem:
         state.system_thought = self.system_thought.tolist()
 
         mem = self.work.snapshot()
-        mem["system_thought"] = self.system_thought.tolist() 
+        mem["system_thought"] = self.system_thought.tolist()
+        if memory:
+            mem.update(memory)
         
         proposals = {name: agent.propose(state, mem) for name, agent in self.agents.items() if self.graph.node_alive.get(name, False)}
         
@@ -346,19 +349,68 @@ def main():
                 tool, info = system.step(bb)
                 if tool == "emergency_stop": reward = -1.0; break
                 
-                system.consecutive_idle_count = system.consecutive_idle_count + 1 if tool in ["wait", "summarize"] else 0
-                if system.consecutive_idle_count > 3:
+                # ===== TRACK IDLE STEPS =====
+                if tool in ["wait", "summarize"]:
+                    system.consecutive_idle_count += 1
+                else:
+                    system.consecutive_idle_count = 0
+
+                # ===== MULTI-PHASE DEADLOCK RECOVERY =====
+                if system.consecutive_idle_count >= 3:
                     deadlock_count += 1
                     system.deadlock_recovery_stats["total_deadlocks"] += 1
-                    system.episode_log.append("[DEADLOCK] Attempting Recovery...")
-                    system.consecutive_idle_count = 0
+
+                    system.episode_log.append(
+                        f"[DEADLOCK DETECTED] Step {step}, Consecutive Idle: {system.consecutive_idle_count}"
+                    )
+
+                    # ===== PHASE 1: Emergency Agent Rotation =====
+                    awakened = system.meta.emergency_rotation()
+                    if awakened:
+                        system.episode_log.append(
+                            f"[PHASE 1: ROTATION SUCCESS] Awakened agent: {awakened}"
+                        )
+                        system.consecutive_idle_count = 0
+                        recovery_count += 1
+                        system.deadlock_recovery_stats["successful_recoveries"] += 1
+                        continue  # Immediately retry with new agent
+
+                    # ===== PHASE 2: Forced Random Exploration =====
+                    system.episode_log.append("[PHASE 2: FORCED EXPLORATION] Attempting 3-step recovery...")
                     escaped = False
-                    for _ in range(3):
-                        r_tool, r_info = system.step(bb, force_strategy="random")
+
+                    error_rate = system.work.get("error_rate", 1.0)
+
+                    for recovery_attempt in range(3):
+                        memory = {
+                            "consecutive_idle_count": system.consecutive_idle_count,
+                            "system_panic": True,
+                            "error_rate": error_rate,
+                            "step": step
+                        }
+
+                        r_tool, r_info = system.step(bb, force_strategy="random", memory=memory)
+
+                        system.episode_log.append(
+                            f"[RECOVERY ATTEMPT {recovery_attempt + 1}] Action: {r_tool}, "
+                            f"Result: {'SUCCESS' if r_info.get('ok') else 'FAIL'}"
+                        )
+
                         if r_tool not in ["wait", "summarize"]:
+                            system.episode_log.append("[PHASE 2: ESCAPE SUCCESS] Deadlock broken!")
+                            recovery_count += 1
                             system.deadlock_recovery_stats["successful_recoveries"] += 1
-                            recovery_count += 1; escaped = True; break
-                    if not escaped: reward = -0.5; break
+                            escaped = True
+                            system.consecutive_idle_count = 0
+                            break
+
+                    # ===== PHASE 3: Failure = Abort =====
+                    if not escaped:
+                        system.episode_log.append(
+                            "[DEADLOCK FATAL] All recovery strategies failed. Terminating episode."
+                        )
+                        reward = -0.5
+                        break
 
                 layout["brain"].update(generate_brain_view(system.system_thought))
                 layout["nervous"].update(generate_nervous_view(system.last_spikes))

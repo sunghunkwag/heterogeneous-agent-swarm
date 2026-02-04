@@ -304,6 +304,21 @@ class JEPAWorldModelAgent:
 
             scores[act] = score
 
+        # ===== PANIC EXPLORATION BOOST =====
+        consecutive_idle = memory.get("consecutive_idle_count", 0)
+        system_panic = memory.get("system_panic", False)
+
+        base_beta = self.config.ucb_beta_base if hasattr(self.config, 'ucb_beta_base') else 1.0
+
+        if system_panic and consecutive_idle >= 2:
+            # PANIC MODE: Strongly prefer active actions over waiting
+            beta = base_beta * 5.0
+
+            scores["run_tests"] = scores.get("run_tests", 0.0) * 5.0
+            scores["write_patch"] = scores.get("write_patch", 0.0) * 5.0
+            scores["summarize"] = scores.get("summarize", 0.0) * 1.5
+            scores["wait"] = scores.get("wait", 0.0) * 0.1  # 90% discount for waiting
+
         best_action = max(scores, key=scores.get)
         best_score = scores[best_action]
         best_uncertainty = action_errors[best_action]
