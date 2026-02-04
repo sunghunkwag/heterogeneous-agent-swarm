@@ -36,10 +36,38 @@ class DSLSolver:
                 
         # Level 2 Search: Composition (f(g(x)))
         if not best_program and self.max_depth >= 2:
+            # Optimization: Precompute p2(x) for all primitives and examples
+            valid_p2_results = []
+            for p2 in self.primitives:
+                transformed = []
+                possible = True
+                for inp, _ in train_pairs:
+                    try:
+                        res = p2(inp)
+                        transformed.append(res)
+                    except Exception:
+                        possible = False
+                        break
+                if possible:
+                    valid_p2_results.append((p2, transformed))
+
             for p1 in self.primitives:
-                for p2 in self.primitives:
-                    def composed(x, _p1=p1, _p2=p2): return _p1(_p2(x))
-                    if self._check_program(composed, train_pairs):
+                for p2, p2_outputs in valid_p2_results:
+                    # Check if p1(p2_outputs) matches targets
+                    matches = True
+                    for i, (_, out) in enumerate(train_pairs):
+                        try:
+                            # Use cached intermediate result
+                            pred = p1(p2_outputs[i])
+                            if pred.shape != out.shape or not np.array_equal(pred, out):
+                                matches = False
+                                break
+                        except Exception:
+                            matches = False
+                            break
+
+                    if matches:
+                        def composed(x, _p1=p1, _p2=p2): return _p1(_p2(x))
                         best_program = composed
                         break
                 if best_program: break
