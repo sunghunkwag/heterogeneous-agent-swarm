@@ -1,34 +1,73 @@
 # Heterogeneous Agent Swarm
 
-Multi-agent system with structural self-modification.
+Multi-agent system with structural self-modification and cost-aware coordination.
+
+## Quick Start
+
+```bash
+pip install -r requirements.txt
+python -m heterogeneous_agent_swarm.main --benchmark
+```
 
 ## Agents
 
-- SymbolicSearch, JEPAWorldModel, NeuroSymbolic, LiquidController, DiffusionExplorer, SSMStability, SNNReflex
+SymbolicSearch, JEPAWorldModel, LiquidController, DiffusionExplorer, SSMStability, SNNReflex
 
-## Components
+## Core Components
 
-- **Orchestrator**: Proposal aggregation, uncertainty-driven gating
-- **MetaKernel**: Agent suppression, capacity modification
-- **GNN**: State aggregation
+| Component | Function |
+|-----------|----------|
+| **Orchestrator** | Proposal aggregation, uncertainty-driven gating |
+| **MetaKernel** | Agent suppression/recovery, capacity modification |
+| **GNN Brain** | State aggregation, system consciousness |
+| **Config** | Centralized thresholds and parameters |
 
-## Features
+## Self-Modification Features
 
-- Agent suppression after 3 failures (loss > 0.8), recovery at loss < 0.2
-- Panic mode (uncertainty > 0.1) blocks risky agents
-- Runtime capacity adjustment with LR warmup
-- Protocol-based interfaces, type validation
+- **Agent Suppression**: Auto-suppress after 3 consecutive failures (loss > 0.8)
+- **Agent Recovery**: Auto-recover when loss < 0.2
+- **Emergency Rotation**: Deadlock mitigation via agent awakening
+- **NAS Suggestions**: Architecture modification proposals for underperformers
+- **Panic Mode**: High uncertainty (> 0.1) blocks risky exploration agents
 
-## Updates  
-
-- JEPA: prediction-error selection, warmup/momentum stabilization
-- C-Stage: failure tracking, uncertainty gating
-- Protocol decoupling, full type hints
-
-## Usage
+## Benchmarks
 
 ```bash
+# Standard benchmark (5 episodes)
 python -m heterogeneous_agent_swarm.main --benchmark
 
+# Hard adversarial benchmark (tests self-modification)
+python -m heterogeneous_agent_swarm.hard_benchmark
+```
 
+### Hard Benchmark Results
 
+| Metric | Verified |
+|--------|----------|
+| Suppression | ✓ |
+| Recovery | ✓ |
+| Emergency Rotation | ✓ |
+
+## Recent Updates
+
+- Centralized configuration via `config.py`
+- Kaiming initialization for JEPA capacity changes
+- Improved error handling with logging
+- Hard benchmark for self-modification verification
+- Full test coverage (26/26 passing)
+
+## Project Structure
+
+```
+heterogeneous_agent_swarm/
+├── agents/          # 6 heterogeneous agents
+├── core/            # Orchestrator, MetaKernel, GNN, Config
+├── envs/            # Sandbox environments
+├── runtime/         # Execution runtime
+├── main.py          # Standard benchmark
+└── hard_benchmark.py # Adversarial benchmark
+```
+
+## License
+
+MIT

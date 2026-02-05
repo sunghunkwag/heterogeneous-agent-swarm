@@ -3,26 +3,33 @@ from typing import Dict, Any, Tuple, List, Optional
 import hashlib
 import numpy as np
 import time
+import logging
 from collections import Counter
 from .graph import AgentGraph
 from .types import Proposal
+from .config import DEFAULT_CONFIG, SwarmConfig
+
+logger = logging.getLogger(__name__)
 
 class Orchestrator:
     """
     Central decision-making component that selects the best action from agent proposals.
+    Uses centralized configuration for thresholds and parameters.
     """
-    def __init__(self, graph: AgentGraph, memory: Optional[Any] = None):
+    def __init__(self, graph: AgentGraph, memory: Optional[Any] = None, config: SwarmConfig = None):
         """
         Initialize the Orchestrator.
 
         Args:
             graph: The AgentGraph instance tracking agent states.
             memory: Optional EpisodicMemory reference.
+            config: SwarmConfig instance for centralized configuration.
         """
+        self.config = config or DEFAULT_CONFIG
         self.graph = graph
         self.memory = memory
-        self.veto_threshold = 0.5
-        self.selection_strategy = "weighted_perf"
+        self.veto_threshold = self.config.orchestrator.default_veto_threshold
+        self.selection_strategy = self.config.orchestrator.default_selection_strategy
         self.step_counter = 0  # Time-varying factor
 
     def update_policy(self, veto_threshold: Optional[float] = None, selection_strategy: Optional[str] = None) -> None:
@@ -37,8 +44,11 @@ class Orchestrator:
             self.veto_threshold = max(0.0, min(1.0, veto_threshold))
 
         if selection_strategy is not None:
-            if selection_strategy in ["weighted_perf", "consensus", "random"]:
+            valid = self.config.orchestrator.valid_strategies
+            if selection_strategy in valid:
                 self.selection_strategy = selection_strategy
+            else:
+                logger.warning(f"Invalid strategy '{selection_strategy}', valid options: {valid}")
 
     def choose(self, proposals: Dict[str, Proposal], state: Any, veto: Optional[Dict[str, Any]] = None,
                force_strategy: Optional[str] = None, system_uncertainty: float = 0.5) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
@@ -81,12 +91,9 @@ class Orchestrator:
             return "summarize", {"reason": "all_agents_dead_or_suppressed"}, {"reason": "no_valid_proposals"}
 
         # --- C-STAGE: GNN GATING LOGIC ---
-        # Get system uncertainty from state (must be populated by runner)
-        # Note: arg passed as system_uncertainty
-
-        # Thresholds
-        UNCERTAINTY_HIGH = 0.1  # High disagreement -> Chaos
-        UNCERTAINTY_LOW = 0.01  # Low disagreement -> Convergence
+        # Thresholds from config
+        UNCERTAINTY_HIGH = self.config.uncertainty.high  # High disagreement -> Chaos
+        UNCERTAINTY_LOW = self.config.uncertainty.low    # Low disagreement -> Convergence
 
         gating_decision = "none"
 
@@ -126,17 +133,19 @@ class Orchestrator:
                 hits = self.memory.retrieve(state_vec, top_k=5)
 
                 for hit in hits:
-                    # Only consider positive experiences (reward > 0)
+                    # Only consider positive experiences
                     reward = hit.metadata.get("reward", 0)
-                    if reward > 0.2:  # Threshold for "good" experience
+                    positive_threshold = self.config.orchestrator.positive_experience_threshold
+                    if reward > positive_threshold:
                         action = hit.metadata.get("action", "")
                         if action and action in [p.action_type for p in alive_proposals.values()]:
                             # Boost score proportional to similarity and reward
-                            boost = hit.similarity * reward * 0.3
+                            boost_factor = self.config.orchestrator.memory_similarity_boost_factor
+                            boost = hit.similarity * reward * boost_factor
                             memory_bias[action] = memory_bias.get(action, 0.0) + boost
-            except Exception:
-                # Graceful fallback if memory query fails
-                pass
+            except Exception as e:
+                # Log the error for debugging instead of silently ignoring
+                logger.warning(f"Memory query failed: {e}")
 
         winner_proposal: Optional[Proposal] = None
         selection_reason = ""

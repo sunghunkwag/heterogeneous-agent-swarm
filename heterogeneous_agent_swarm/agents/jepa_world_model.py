@@ -111,7 +111,10 @@ class JEPAWorldModelAgent:
         return self._count_params() / 5000.0
 
     def increase_capacity(self, factor: float = 1.5) -> dict:
-        """Increase model capacity by widening hidden layers."""
+        """
+        Increase model capacity by widening hidden layers.
+        Uses proper Kaiming initialization for new neurons.
+        """
         old_hidden = self.config.hidden_dim
         new_hidden = int(old_hidden * factor)
 
@@ -119,15 +122,28 @@ class JEPAWorldModelAgent:
         new_encoder = JEPAEncoder(self.config.input_dim, self.config.latent_dim, new_hidden).to(self.device)
         new_predictor = JEPAPredictor(self.config.latent_dim, self.config.action_dim, new_hidden).to(self.device)
 
-        # Attempt to copy weights where possible (simple slicing)
-        # Note: This loses some information but preserves rough initialization scale
+        # Apply Kaiming initialization to new networks first
+        for module in new_encoder.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        
+        for module in new_predictor.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
+        # Copy existing weights to preserve learned representations
         with torch.no_grad():
-            # Encoder
+            # Encoder: Copy first layer weights (input -> hidden)
             new_encoder.net[0].weight[:old_hidden, :] = self.encoder.net[0].weight
             new_encoder.net[0].bias[:old_hidden] = self.encoder.net[0].bias
+            # Encoder: Copy last layer weights (hidden -> output), only existing columns
             new_encoder.net[2].weight[:, :old_hidden] = self.encoder.net[2].weight
 
-            # Predictor
+            # Predictor: Same pattern
             new_predictor.net[0].weight[:old_hidden, :] = self.predictor.net[0].weight
             new_predictor.net[0].bias[:old_hidden] = self.predictor.net[0].bias
             new_predictor.net[2].weight[:, :old_hidden] = self.predictor.net[2].weight
@@ -156,7 +172,8 @@ class JEPAWorldModelAgent:
             "old_hidden": old_hidden,
             "new_hidden": new_hidden,
             "new_params": self.parameter_count,
-            "warmup_triggered": True
+            "warmup_triggered": True,
+            "initialization": "kaiming_normal"
         }
 
     def decrease_capacity(self, factor: float = 0.7) -> dict:

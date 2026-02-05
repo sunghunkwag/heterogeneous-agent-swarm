@@ -5,10 +5,14 @@ import copy
 import time
 import numpy as np
 import collections
+import logging
 
 from .audit import AuditLog
 from .graph import AgentGraph
 from .orchestrator import Orchestrator
+from .config import DEFAULT_CONFIG, SwarmConfig
+
+logger = logging.getLogger(__name__)
 
 from heterogeneous_agent_swarm.agents.symbolic_search import SymbolicSearchAgent, SymbolicConfig
 from heterogeneous_agent_swarm.agents.jepa_world_model import JEPAWorldModelAgent, JEPAConfig
@@ -34,7 +38,8 @@ class MetaKernelV2:
     Manages structural adaptation of the swarm (adding/removing agents, policy updates).
     """
     def __init__(self, graph: AgentGraph, audit: AuditLog, orchestrator: Orchestrator,
-                 agents_dict: Dict[str, Any], device: str = "cpu", min_quorum: int = 3):
+                 agents_dict: Dict[str, Any], device: str = "cpu", min_quorum: int = None,
+                 config: SwarmConfig = None):
         """
         Initialize the MetaKernel.
 
@@ -45,13 +50,15 @@ class MetaKernelV2:
             agents_dict: Reference to the main agents dictionary.
             device: Computing device (cpu/cuda).
             min_quorum: Minimum votes required to pass a proposal.
+            config: SwarmConfig instance for centralized configuration.
         """
+        self.config = config or DEFAULT_CONFIG
         self.graph = graph
         self.audit = audit
         self.orchestrator = orchestrator
         self.agents_dict = agents_dict
         self.device = device
-        self.min_quorum = min_quorum
+        self.min_quorum = min_quorum if min_quorum is not None else self.config.meta_kernel.min_quorum
         self.proposals: Dict[str, ChangeProposal] = {}
 
         # Track consecutive failures for hard suppression logic
@@ -275,11 +282,12 @@ class MetaKernelV2:
         if agent_name not in self.agents_dict:
             return None
 
-        # Thresholds
-        FAILURE_THRESHOLD = 0.8
-        STREAK_LIMIT = 3
+        # Use centralized config thresholds
+        failure_threshold = self.config.control.failure_threshold
+        streak_limit = self.config.control.streak_limit
+        recovery_threshold = self.config.control.recovery_threshold
 
-        if task_loss > FAILURE_THRESHOLD:
+        if task_loss > failure_threshold:
             self.agent_failure_streaks[agent_name] += 1
         else:
             self.agent_failure_streaks[agent_name] = 0
@@ -287,26 +295,28 @@ class MetaKernelV2:
         current_streak = self.agent_failure_streaks[agent_name]
 
         # Logic: If streak exceeds limit, SUPPRESS the agent
-        if current_streak >= STREAK_LIMIT:
+        if current_streak >= streak_limit:
             if not self.graph.node_suppressed.get(agent_name, False):
                 self.suppress_agent(agent_name, suppress=True)
+                logger.info(f"Agent {agent_name} suppressed after {current_streak} consecutive failures")
                 return {
                     "action": "suppress",
                     "agent": agent_name,
                     "reason": f"persistent_failure_streak_{current_streak}",
-                    "loss": task_loss
+                    "loss": task_loss,
+                    "threshold": failure_threshold
                 }
         else:
-            # Attempt recovery if performance improved?
-            # For now, strict: only manual or periodic reset allows recovery.
-            # Or if loss is VERY low, we can unsuspress.
-            if task_loss < 0.2 and self.graph.node_suppressed.get(agent_name, False):
+            # Attempt recovery if performance improved
+            if task_loss < recovery_threshold and self.graph.node_suppressed.get(agent_name, False):
                 self.suppress_agent(agent_name, suppress=False)
+                logger.info(f"Agent {agent_name} recovered with loss {task_loss:.3f}")
                 return {
                     "action": "unsuppress",
                     "agent": agent_name,
                     "reason": "performance_recovery",
-                    "loss": task_loss
+                    "loss": task_loss,
+                    "recovery_threshold": recovery_threshold
                 }
 
         return None
@@ -346,9 +356,9 @@ class MetaKernelV2:
         # Get performance history
         perf = self.graph.node_perf.get(agent_name, 0.5)
 
-        # Check if consistently underperforming (threshold < 0.3)
-        # Also check if agent supports modification
-        if perf < 0.3 and hasattr(agent, 'increase_capacity'):
+        # Check if consistently underperforming
+        underperf_threshold = self.config.meta_kernel.underperformance_threshold
+        if perf < underperf_threshold and hasattr(agent, 'increase_capacity'):
 
             # Get current stats if available
             current_cap = 0.0
