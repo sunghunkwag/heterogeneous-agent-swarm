@@ -153,12 +153,18 @@ class HardBenchmarkRunner:
                     for agent_name in system.agents.keys():
                         agent_loss = self.env.get_loss_for_agent(agent_name, obs.get("last_test_ok", False))
                         
+                        # Update node performance in graph (1.0 - loss gives performance)
+                        # This is required for NAS to trigger
+                        agent_perf = max(0.0, 1.0 - agent_loss)
+                        system.graph.node_perf[agent_name] = agent_perf
+                        
                         # Track performance
                         if agent_name not in self.metrics["agent_performance"]:
                             self.metrics["agent_performance"][agent_name] = []
                         self.metrics["agent_performance"][agent_name].append({
                             "step": step,
                             "loss": agent_loss,
+                            "perf": agent_perf,
                             "phase": current_phase
                         })
                         
@@ -193,17 +199,30 @@ class HardBenchmarkRunner:
                             })
                             print(f"  [EMERGENCY ROTATION] Awakened: {awakened}")
                 
-                # Check for NAS suggestions
+                # Execute NAS automatically (with cooldown to prevent runaway growth)
                 if hasattr(system, 'meta') and hasattr(system, 'agents'):
-                    for agent_name in list(system.agents.keys())[:3]:  # Check first 3
-                        proposal = system.meta.suggest_architecture_modification(agent_name)
-                        if proposal:
+                    if not hasattr(self, 'nas_cooldown'):
+                        self.nas_cooldown = {}  # Track last NAS step per agent
+                    
+                    # Only one NAS per step, check agents with cooldown
+                    for agent_name in list(system.agents.keys())[:3]:
+                        # Skip if agent recently had NAS (10-step cooldown)
+                        last_nas = self.nas_cooldown.get(agent_name, -100)
+                        if step - last_nas < 10:
+                            continue
+                        
+                        nas_result = system.meta.auto_execute_nas(agent_name)
+                        if nas_result and nas_result.get("action") == "nas_executed":
+                            self.nas_cooldown[agent_name] = step  # Record cooldown
                             self.metrics["arch_modifications"].append({
                                 "step": step,
-                                "proposal_id": proposal.proposal_id,
-                                "agent": agent_name
+                                "agent": agent_name,
+                                "old_hidden": nas_result.get("old_hidden"),
+                                "new_hidden": nas_result.get("new_hidden"),
+                                "new_params": nas_result.get("new_params")
                             })
-                            print(f"  [NAS] Architecture change suggested for {agent_name}")
+                            print(f"  [NAS EXECUTED] {agent_name}: {nas_result.get('old_hidden')} -> {nas_result.get('new_hidden')} neurons")
+                            break  # Only one NAS per step
                 
             except Exception as e:
                 print(f"  [ERROR] Step {step}: {e}")

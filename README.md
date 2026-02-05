@@ -27,8 +27,9 @@ SymbolicSearch, JEPAWorldModel, LiquidController, DiffusionExplorer, SSMStabilit
 - **Agent Suppression**: Auto-suppress after 3 consecutive failures (loss > 0.8)
 - **Agent Recovery**: Auto-recover when loss < 0.2
 - **Emergency Rotation**: Deadlock mitigation via agent awakening
-- **NAS Suggestions**: Architecture modification proposals for underperformers
+- **NAS Execution**: Automatic architecture modification for underperformers
 - **Panic Mode**: High uncertainty (> 0.1) blocks risky exploration agents
+- **Checkpointing**: Save/load swarm state across sessions
 
 ## Benchmarks
 
@@ -47,6 +48,7 @@ python -m heterogeneous_agent_swarm.hard_benchmark
 | Suppression | ✓ |
 | Recovery | ✓ |
 | Emergency Rotation | ✓ |
+| NAS Execution | ✓ |
 
 ## Recent Updates
 

@@ -439,3 +439,99 @@ class MetaKernelV2:
         })
 
         return best_agent
+
+    def auto_execute_nas(self, agent_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Automatically execute NAS (Neural Architecture Search) for an agent.
+        
+        This method combines proposal suggestion, voting, quorum check,
+        and execution in one atomic operation for true self-modification.
+        
+        Args:
+            agent_name: Agent to potentially modify
+            
+        Returns:
+            Dictionary with execution results, or None if no modification needed
+        """
+        # 1. Get NAS suggestion
+        proposal = self.suggest_architecture_modification(agent_name)
+        if proposal is None:
+            return None
+        
+        # 2. Auto-vote (the meta-kernel votes for its own proposals)
+        # Need 3 votes to meet default quorum
+        self.vote(proposal.proposal_id, "meta_kernel", True)
+        self.vote(proposal.proposal_id, "orchestrator", True)
+        self.vote(proposal.proposal_id, "gnn_brain", True)  # Third vote for quorum
+        
+        # 3. Check quorum
+        if not self._quorum_ok(proposal):
+            logger.info(f"NAS proposal for {agent_name} did not reach quorum")
+            return {
+                "action": "nas_rejected",
+                "agent": agent_name,
+                "reason": "quorum_not_reached",
+                "proposal_id": proposal.proposal_id
+            }
+        
+        # 4. Execute the modification
+        agent = self.agents_dict.get(agent_name)
+        if agent is None:
+            return None
+        
+        modification = proposal.payload.get("modification")
+        result = None
+        
+        if modification == "increase_capacity" and hasattr(agent, 'increase_capacity'):
+            try:
+                result = agent.increase_capacity()
+                result["action"] = "nas_executed"
+                result["agent"] = agent_name
+                
+                # Commit the proposal
+                self.commit(proposal.proposal_id)
+                
+                # Log the execution
+                self.audit.emit("nas_executed", {
+                    "agent": agent_name,
+                    "modification": modification,
+                    "result": result,
+                    "proposal_id": proposal.proposal_id,
+                    "timestamp": time.time()
+                })
+                
+                logger.info(f"NAS executed for {agent_name}: {modification}")
+                
+            except Exception as e:
+                logger.error(f"NAS execution failed for {agent_name}: {e}")
+                result = {
+                    "action": "nas_failed",
+                    "agent": agent_name,
+                    "error": str(e)
+                }
+        
+        elif modification == "decrease_capacity" and hasattr(agent, 'decrease_capacity'):
+            try:
+                result = agent.decrease_capacity()
+                result["action"] = "nas_executed"
+                result["agent"] = agent_name
+                self.commit(proposal.proposal_id)
+                
+                self.audit.emit("nas_executed", {
+                    "agent": agent_name,
+                    "modification": modification,
+                    "result": result,
+                    "proposal_id": proposal.proposal_id,
+                    "timestamp": time.time()
+                })
+                
+            except Exception as e:
+                logger.error(f"NAS execution failed for {agent_name}: {e}")
+                result = {
+                    "action": "nas_failed",
+                    "agent": agent_name,
+                    "error": str(e)
+                }
+        
+        return result
+
