@@ -6,7 +6,15 @@ Multi-agent system with structural self-modification and cost-aware coordination
 
 ```bash
 pip install -r requirements.txt
+pip install -e .
 python -m heterogeneous_agent_swarm.main --benchmark
+```
+
+## Verification
+
+```bash
+# Run test suite from repository root
+pytest -q
 ```
 
 ## Agents
